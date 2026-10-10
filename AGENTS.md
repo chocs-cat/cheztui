@@ -112,20 +112,26 @@ can rewrite their home directory and publish the result. So:
 ## Relay workflow
 
 Work in this repository is built by fresh agent sessions that hand it to one
-another through local process files and pull requests, using the relay skills:
+another through local process files and pull requests, using the relay
+plugin's skills (`/relay:<skill>` in Claude Code, `$relay:<skill>` in Codex):
 
-- `/relay-project` shapes an idea into settled design and an ordered delivery
-  plan, and closes the project when its work is accepted.
-- `/relay-next` reviews the chunk in flight, records the review, merges
-  accepted work, and cuts the next chunk brief.
-- `/relay-execute` builds the chunk in flight unit by unit on its own branch
+- `relay:go` runs whichever step comes next, as the status file's *Next*
+  block records it. Start every fresh session with it.
+- `relay:project` shapes an idea into settled design and an ordered delivery
+  plan, makes design changes, and closes the project when its work is
+  accepted.
+- `relay:plan` cuts the next chunk brief from the active project, or from a
+  small, already-designed fix.
+- `relay:execute` builds the chunk in flight unit by unit on its own branch
   and draft pull request, then hands it back for review.
-- `/relay-release` cuts a version by reviewing and merging release-please's
-  release pull request.
+- `relay:review` reviews the chunk in flight, records the review, and either
+  sends it back for rework or merges it.
+- `relay:release` cuts a version by reviewing and merging release-please's
+  release pull request. It is only ever run on purpose, never by `relay:go`.
 
 Code reaches the integration branch only through a chunk pull request, so every
 change gets the executor's test discipline and a CI run. The status file is the
-handoff between sessions: run each skill in a fresh session.
+handoff between sessions: run each step in a fresh session.
 
 The process files (status, chunk briefs, projects, and the two checklists)
 live in `.relay/`, which git ignores: they are never committed, and there is
