@@ -45,13 +45,14 @@ Same shape as corral and tack.
 | TUI | Textual (`>=8,<9`) |
 | CLI | argparse, `--json` on every read command |
 | Config | TOML via tomlkit, `~/.config/cheztui/config.toml` |
+| Watching | watchfiles |
 | Build | hatchling, uv, `uv.lock` |
-| Checks | pytest + pytest-asyncio, ruff (corral's rule set), ty |
+| Checks | pytest + pytest-asyncio + pytest-textual-snapshot, ruff (corral's rule set), ty |
 | Repo | `chocs-cat/cheztui`, default branch `master`, MIT |
 | Releases | release-please, Conventional Commits, CI-gated `master` |
 | Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`), Claude plugin manifest (`.claude-plugin/`) |
 | Platforms | macOS and Linux |
-| Requires | chezmoi ≥ 2.60 (pin the floor to whatever the JSON outputs used need) |
+| Requires | chezmoi ≥ 2.60, checked once per run; below it the CLI exits 3 and the TUI shows the error (DEC-21) |
 
 The repo starts private and goes public when the maintainer decides to publish
 it. The logo is `docs/logo-light.svg` and `docs/logo-dark.svg`.
@@ -94,10 +95,16 @@ re-added ~/.zshrc → a1b2c3d "Update dot_zshrc" (pushed)
  a Apply  r Re-add  m Merge  e Edit  d Full diff  space Select  / Filter  ? Help
 ```
 
-- **Header:** source path, `chezmoi verify` badge, branch with ahead/behind,
+- **Header:** source path, verify badge, branch with ahead/behind,
   source-tree cleanliness (`clean` / `2 uncommitted`), dry-run indicator.
+  The verify badge comes from the Drift data (`✓ verify` when no row has
+  its second status column set, else `✗ verify`), not a separate
+  `chezmoi verify` run. Ahead/behind compares `HEAD` with `@{u}` as last
+  fetched; cheztui fetches only from the Repo view.
 - **View tabs:** number keys switch; the current view is highlighted. A view
-  with items needing attention shows a count (`1 Drift 4`).
+  with items needing attention shows a count (`1 Drift 4`). Only views that
+  exist show a tab; a missing view's number does nothing, and the numbers
+  never move (DEC-20).
 - **List:** filterable (`/`), multi-select (`space`), vim and arrow keys.
 - **Detail:** context for the selected row; scrolls independently
   (`J`/`K` or `PgUp`/`PgDn`).
@@ -105,7 +112,8 @@ re-added ~/.zshrc → a1b2c3d "Update dot_zshrc" (pushed)
   log.
 - **Key bar:** current-context keys only.
 
-Narrow terminals (< 100 cols) stack detail under the list; `tab` toggles focus.
+Narrow terminals (narrower than `ui.narrow_breakpoint`, default 100 cols)
+stack detail under the list; `tab` toggles focus.
 
 ## 5. Global behaviour
 
@@ -116,31 +124,54 @@ Narrow terminals (< 100 cols) stack detail under the list; `tab` toggles focus.
 | `1`–`9`, `0` | Switch view |
 | `j`/`k`, `↑`/`↓` | Move |
 | `J`/`K`, `PgUp`/`PgDn` | Scroll detail |
-| `/` | Filter list |
+| `/` | Filter list (substring of the target path; `esc` clears) |
 | `space` | Toggle selection (actions apply to selection, else to the current row) |
 | `g` | Refresh |
-| `:` | Command palette |
+| `:` | Command palette: every action in the current view and every global one, each with its key |
 | `l` | Session log |
+| `R` | Reveal masked values in the detail pane |
 | `,` | Settings |
-| `?` | Help |
+| `?` | Help: the current view's keys and the global ones, generated from the bindings |
 | `q` | Quit |
+
+The session log holds every result and error of the session, in memory only;
+it is never written to disk.
 
 ### Write flow
 
 Every write (apply, re-add, add, merge, forget, destroy, chattr, ignore,
 state reset, external refresh, edit, update) goes through one path:
 
-1. **Pre-flight.** Source tree must be clean (`git status --porcelain` in the
-   source dir). If it isn't, the preview says so and lists the stray files;
-   the action is blocked until resolved (option: open the Repo view).
+1. **Pre-flight.** When chezmoi's `git.autoCommit` is on (read from
+   `chezmoi dump-config --format=json`), the source tree must be clean
+   (`git status --porcelain` in the source dir). If it isn't, the preview
+   says so and lists the stray files; the action is blocked until resolved
+   (option: open the Repo view). The pre-flight runs before the preview's
+   dry run, because chezmoi auto-commits a dirty tree even on a `--dry-run`
+   of a command that writes the source. With `git.autoCommit` off, a dirty
+   tree doesn't block: the preview lists the uncommitted files as a warning
+   (DEC-8).
 2. **Preview modal.** Shows the exact command, the targets, and a dry-run
    result (`chezmoi <cmd> --dry-run --verbose` where chezmoi supports it,
-   otherwise a computed diff). For batch actions, a per-file summary with
-   expandable diffs.
+   otherwise a computed diff), masked (see Secrets). For batch actions, a
+   per-file summary with expandable diffs. Apply and forget run with
+   `--force`, in the dry run and for real: the modal is the confirmation, and
+   without `--force` chezmoi stops to ask (about targets the user changed,
+   and before every forget), which fails under `--no-tty` (DEC-16).
 3. **Confirm.** Enter runs; Esc cancels.
 4. **Result.** Log line shows the outcome and the commit chezmoi made (read
-   from the source repo's `HEAD` before/after), and push state. Views
-   refresh.
+   from the source repo's `HEAD` before/after), and push state: `pushed`
+   when `@{u}` contains the commit, `not pushed` otherwise, and `not
+   committed` when the change is waiting in the source tree (DEC-19). On a
+   failure the log line shows chezmoi's last error line and the session log
+   the whole of it. Views refresh.
+
+**Interactive writes** (edit and merge) hand off to the user's editor or
+merge tool, so they skip steps 2 and 3: pre-flight, suspend, result (DEC-4,
+DEC-8).
+
+A read in progress can be cancelled (`esc`); a write can't, since chezmoi
+may have committed part-way.
 
 Global `--dry-run` (`-n`) mode passes `-n` to every chezmoi call and marks
 the header `DRY RUN`.
@@ -154,9 +185,12 @@ the header `DRY RUN`.
 
 ### Secrets
 
-- Decrypted contents and rendered templates show secret-looking values
-  masked. Detection marks:
-  - values from password-manager template functions;
+- The TUI masks secret-looking values in every diff and rendered body it
+  displays. Masking ships with v0.1 (DEC-17). Detection marks:
+  - values from password-manager template functions: a template whose
+    source calls one (`onepassword*`, `bitwarden*`, `pass`, `keyring`,
+    `secret*`, `vault`, …) is masked whole, since a rendered line can't be
+    mapped back to the call;
   - encrypted file bodies;
   - values under keys matching configurable name patterns
     (`token|secret|password|api_key`…);
@@ -167,9 +201,13 @@ the header `DRY RUN`.
   masking off for files where the name patterns misfire (a keybindings file
   full of `key = …`). `always_mask` masks the whole body of files like
   `.netrc`, `.env` or `~/.ssh/id_*`.
+- A masked value prints as `********`, whatever its length.
 - `R` reveals for the current detail view only; moving away re-masks.
 - Nothing decrypted is ever written to disk, the session log, or `--json`
   output (unless `--reveal` is passed explicitly on the CLI).
+- `cheztui edit` and `cheztui add` mask their diff only for encrypted
+  targets and `always_mask` files; other sources are plain text the agent
+  already read (§8, DEC-17).
 
 ### External editor and pager
 
@@ -188,24 +226,57 @@ The home view. Everything where actual state ≠ target state, or a script
 would run.
 
 - **Rows** come from `chezmoi status` (both columns), joined with
-  `chezmoi managed --format=json --path-style=all` for source paths and
-  attributes. Each row gets a **direction**:
-  - `you→` — first column set: the target changed since chezmoi last wrote
-    it (you edited the file). Default fix: **re-add**.
-  - `src→` — only second column set: the source changed (pull, edit). Default
-    fix: **apply**.
-  - `both` — both changed. Default fix: **merge**.
-  - `run` — a script will run on next apply.
-- Row tags: `tmpl`, `enc`, `exec`, `link`, `ext`, `dir`.
+  `chezmoi managed --format=json --path-style=all` for source paths. Each
+  row gets a **direction** (DEC-14):
+  - `you→`: the target changed since chezmoi last wrote it (you edited the
+    file), and the source didn't.
+  - `src→`: only the source changed (pull, edit).
+  - `both`: both changed.
+  - `run`: a script will run on next apply.
+
+  `chezmoi status` prints `MM` for both `you→` and `both`, so a row whose
+  first column is set is `you→` when the sha256 of its target-state contents
+  (`chezmoi dump --format=json` over those rows) equals the `contentsSHA256`
+  in its `entryState` (`chezmoi state dump --format=json`), and `both`
+  otherwise. A first column that is blank makes the row `src→`; a second
+  column `R` makes it `run`. The contents are hashed in memory and dropped.
+- **Default fix**, run by `enter`: the first line that matches (DEC-14).
+
+  | Row | Default fix |
+  |---|---|
+  | `run` | apply (runs the script) |
+  | `src→` | apply |
+  | `you→`, target deleted (first column `D`) | forget |
+  | `you→`, a template | merge (`chezmoi re-add` skips templates) |
+  | `you→`, a directory or symlink | apply, warning that it overwrites your change |
+  | `you→` | re-add |
+  | `both`, target deleted | apply |
+  | `both` | merge |
+
+- Row tags: `tmpl`, `enc`, `exec`, `link`, `ext`, `dir`. `tmpl`, `enc` and
+  `ext` come from `chezmoi managed --include=templates|encrypted|externals`;
+  `dir`, `link` and `exec` from the `type` and `perm` of
+  `chezmoi dump --format=json`. cheztui never decodes source filename
+  prefixes (DEC-13, DEC-15).
 - Sort: `both` first, then `you→`, `src→`, `run`; alphabetical within.
 - **Detail:** target and source paths, direction in words, built-in
   syntax-highlighted unified diff (via `chezmoi diff <target>` captured with
   no pager, rendered by cheztui). For templates, a toggle (`t`) between the
   diff and the rendered output.
-- **Keys:** `enter` default fix for the row · `a` apply · `r` re-add ·
-  `m` merge (suspends for chezmoi's merge tool) · `M` merge-all through the
-  selection · `e` edit source · `d` full diff · `x` forget · `A` apply all
-  (preview lists every file; individual files can be unticked).
+  The diff and the rendered output are masked (§5, Secrets); `R` reveals.
+- **Keys:** `enter` default fix for the row · `a` apply · `r` re-add (not
+  on templates, directories, symlinks or deleted targets: the key bar hides
+  it there) · `m` merge (suspends for chezmoi's merge tool) · `M` merge
+  through the selection, one `chezmoi merge` call · `e` edit source · `d`
+  full diff · `x` forget · `A` apply all.
+- **Selection:** with rows selected, `a`, `r`, `x` and `M` act on every
+  selected row in one chezmoi call, after one preview listing each file;
+  rows the action can't take are left out and named in the preview.
+  `enter` runs each selected row's default fix, one call per action, under
+  one preview.
+- **Apply all** (`A`): the preview lists every drift row. `src→` and `run`
+  rows start ticked; `you→` and `both` rows start unticked and marked as
+  overwriting your change. `space` ticks and unticks (DEC-16).
 
 ### 2 · Files
 
@@ -358,10 +429,27 @@ missing or broken.
 | `cheztui verify [--json]` | Pass/fail, failing targets |
 | `cheztui doctor [--json]` | Parsed doctor results |
 | `cheztui preview [--profile NAME] [--json]` | Temp-dir new-machine preview |
-| `cheztui edit <target> --ops FILE [--dry-run]` | Safe scripted edit (§8) |
+| `cheztui edit <target> --ops FILE [--dry-run] [--allow-drift] [--reveal] [--json]` | Safe scripted edit (§8) |
+| `cheztui add <path> [--template] [--encrypt] [--dry-run] [--reveal] [--json]` | Bring a new file under management (§8) |
 
 Global flags: `--dry-run/-n`, `--chezmoi-config PATH`, `--source PATH`,
-`--profile NAME`.
+`--destination PATH` (DEC-19), and `--profile NAME` from v0.3. Each is
+passed through to every chezmoi call.
+
+`--json` shapes are a contract: before 1.0, fields are only added, never
+renamed (DEC-19).
+
+- `status --json`: `{"rows": [{"target", "source", "direction",
+  "default_fix", "columns", "tags"}]}`. `target` is absolute; `source` is
+  the absolute source path, or `null` when the source no longer has the
+  entry; `direction` is `you`, `src`, `both` or `run`; `default_fix` is
+  `apply`, `re-add`, `merge` or `forget`; `columns` is chezmoi's two status
+  characters (`"MM"`, `" R"`); `tags` is a list from `tmpl`, `enc`, `exec`,
+  `link`, `ext`, `dir`. Rows are in the Drift view's sort order. Exit 0
+  whether or not anything drifted.
+- `verify --json`: `{"verified": bool, "failing": [target, …]}`, where
+  `failing` is every status row whose second column is set, scripts
+  included. Exit 0 when verified, 1 when not.
 
 Behaviour lives in `ops.py`; the CLI and the TUI both call it.
 
@@ -384,19 +472,29 @@ it once per file.
 It runs the skill's whole procedure as one command:
 
 1. **Managed?** `chezmoi source-path <target>`. Not managed → exit 1 with a
-   message pointing at `chezmoi add`.
+   message pointing at `cheztui add`.
 2. **Template?** If the source ends in `.tmpl`, say so in the output (and
    in `--json`), since the applied result differs from the edit.
 3. **Drift?** If `chezmoi status <target>` is non-empty, refuse (exit 1):
-   applying would clobber the target. `--allow-drift` overrides.
-4. **Clean source tree?** Refuse if `git status --porcelain` in the source
-   dir is non-empty, listing the stray files.
+   applying would clobber the target. `--allow-drift` overrides, and passes
+   `--force` so the apply overwrites the target's change.
+4. **Clean source tree?** When `git.autoCommit` is on, refuse if
+   `git status --porcelain` in the source dir is non-empty, listing the
+   stray files. With it off, warn and go on (DEC-8).
 5. **Apply ops** to the source text in memory, with the same rules as
-   today's script; on any failure, exit 1 having written nothing.
-6. **`--dry-run`** prints the unified diff and stops.
+   today's script; on any failure, exit 1 having written nothing. An
+   encrypted source is read as plaintext with `chezmoi decrypt`.
+6. **`--dry-run`** (or the global `-n`) prints the unified diff and stops.
+   The diff is masked for encrypted targets and `always_mask` files unless
+   `--reveal` is passed (DEC-17).
 7. **Write** by running `chezmoi edit --apply --hardlink=false <target>`
    with cheztui itself as `$EDITOR`/`$VISUAL` (an internal
-   `cheztui _editor` entry point that writes in place, never renames).
+   `cheztui _editor` entry point that writes in place, never renames). The
+   ops spec and the expected result's sha256 reach `_editor` in a 0600
+   temporary file named by `CHEZTUI_EDIT_SPEC`, deleted afterwards.
+   `_editor` re-applies the spec to the file chezmoi hands it and writes
+   nothing unless the result matches that hash, so what lands is what the
+   dry run showed (DEC-18).
 8. **Verify:** source contains the change, target matches
    (`chezmoi verify <target>`), report the commit made and push state.
 
@@ -420,14 +518,27 @@ Ops: `replace` (`old`/`new`), `delete` (`old`), `insert_after` /
 to 1 and is an assertion (`"all"` = any number ≥ 1). A bare list of ops is
 accepted. `skip_if_contains` makes a re-run a no-op (exit 0).
 
-`--json` output: `{target, source, template, skipped, diff, commit, pushed,
-verified}`.
+Human output is the diff, then one result line in the TUI's log-line
+form (`edited ~/.zshrc → a1b2c3d "Update dot_zshrc" (pushed)`). Refusals go
+to stderr.
+
+`--json` output: `{target, source, template, encrypted, skipped, diff,
+commit, pushed, verified}`. `diff` is the unified diff (masked as above);
+`commit` is `{"sha", "subject"}` or `null`; `pushed` is `true`, `false` or
+`null` (DEC-19); `verified` is `null` on a dry run or a skip. A refusal
+exits 1 with `{"error": "…", "stray": [path, …]}` on stdout, `stray` only
+for a dirty tree.
 
 ### New files
 
 `cheztui add <path> [--template] [--encrypt] [--dry-run]` wraps
 `chezmoi add` with the same clean-tree check and result report, so the
-skill has one tool for both cases.
+skill has one tool for both cases. It takes one path (a file, or a
+directory added recursively) and refuses one chezmoi already manages,
+pointing at `cheztui edit` (DEC-19). Its dry run is
+`chezmoi add --dry-run --verbose`. `--json` output: `{target, source,
+template, encrypted, diff, commit, pushed, verified}`, with `diff` masked
+for encrypted and `always_mask` files unless `--reveal`.
 
 ### Skill
 
@@ -442,7 +553,17 @@ new files, exit codes, and read commands for looking before acting.
 
 ## 9. Configuration
 
-`~/.config/cheztui/config.toml`, editable from the settings screen (`,`).
+`~/.config/cheztui/config.toml` (under `$XDG_CONFIG_HOME` when set). A
+missing file means the defaults below; cheztui creates the file only when
+the settings screen saves. An unknown key is kept and ignored; a value of
+the wrong type, or a file that isn't valid TOML, is a config error (CLI
+exit 2; the TUI shows the error and doesn't start). Saving keeps the file's
+comments and order (tomlkit).
+
+The settings screen (`,`) edits the scalar settings (`ui.*`, `refresh.*`,
+`secrets.token_formats`) in place; `e` there opens the file in `$EDITOR` for
+the lists. Each table arrives with the feature that reads it: v0.1 reads
+`[ui]`, `[refresh]` and `[secrets]`.
 
 ```toml
 [ui]
@@ -486,7 +607,7 @@ src/cheztui/
   state.py        chezmoi persistent-state reads/resets
   preview.py      temp-dir / docker / ssh back ends
   config.py       TOML load/save
-  watch.py        filesystem watching
+  watch.py        filesystem watching (watchfiles)
   tui/
     app.py        app, header, view tabs, log line, key bar
     views/        drift.py files.py scripts.py data.py externals.py
@@ -497,6 +618,14 @@ src/cheztui/
 
 - One chezmoi call per data source per refresh; results cached and shared
   across views.
+- Watching (§5, Refresh): the source dir recursively, ignoring `.git/`, and
+  the parent directory of each managed target, not recursively, keeping
+  only events on managed paths. Events are debounced by
+  `refresh.debounce_ms`; events during cheztui's own write are dropped, and
+  the write's own refresh covers them. `refresh.watch = false` leaves only
+  `g` and the post-write refresh.
+- `chezmoi.py` takes a runner, so TUI tests swap in `tests/fake_chezmoi.py`
+  and integration tests run the real binary against scratch dirs.
 - Prefer machine-readable output (`--format=json`, `--path-style=all`,
   `--no-pager`); parse text only where chezmoi has no JSON (`status`,
   `doctor`), with parsers that handle paths containing spaces.
@@ -505,7 +634,11 @@ src/cheztui/
 
 - **Never touch the real source dir or home.** Tests build a scratch HOME
   and source dir (a real git repo) per test and point chezmoi at them with
-  `--source`, `--destination`, `--config`.
+  `--source`, `--destination`, `--config`, with `HOME` and
+  `XDG_CONFIG_HOME` set to scratch dirs too. One shared pytest fixture
+  builds this setup; the scratch config never enables `autoPush`, and the
+  scratch repo has no remote (a test of push state sets a local branch as
+  the upstream).
 - **Unit:** parsers against recorded chezmoi output fixtures; ops engine
   (every op, count assertions, skip, failure leaves file untouched);
   masking.
@@ -527,6 +660,7 @@ Each milestone is releasable.
 - Drift view with direction, built-in diff, apply / re-add / merge / edit /
   full diff, multi-select, apply-all.
 - Write flow (pre-flight, preview modal, result with commit).
+- Masking for diffs and rendered output, with `R` reveal (DEC-17).
 - Watch + manual refresh; `--dry-run`.
 - CLI: `status`, `edit`, `add`, `verify`, all with `--json`.
 - `skills/cheztui/SKILL.md`; plugin manifest; PyPI + Homebrew.
@@ -544,7 +678,7 @@ Each milestone is releasable.
 - CLI: `scripts`, `scripts reset`, `data`, `render`.
 
 **v0.4 — Secrets, Externals, Health**
-- Secrets & Encryption view with masking/reveal.
+- Secrets & Encryption view (masking itself ships in v0.1).
 - Externals view with refresh.
 - Health view (doctor, verify, upgrade).
 - CLI: `externals`, `doctor`.

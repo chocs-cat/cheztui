@@ -50,6 +50,11 @@ opens a command palette for everything else, and `?` shows full help.
 Any write opens a compact preview modal. Enter confirms and Esc cancels. The
 user sees the exact command and its dry-run result before anything changes.
 
+*Amended 2026-10:* interactive writes (edit and merge, which hand off to the
+user's editor or merge tool) open no modal. There is no dry run to show, and
+the editor is where the user reviews the change; a modal would only add a
+keypress. They still run the pre-flight and show the result (DEC-8).
+
 *Where:* `docs/spec.md` §3, §5 (Write flow).
 
 ## DEC-5: Show the result (2026-10)
@@ -80,9 +85,12 @@ UI still works without colour.
 Every write (apply, re-add, add, merge, forget, destroy, chattr, ignore, state
 reset, external refresh, edit, update) goes through the same four steps:
 
-1. **Pre-flight.** The source tree must be clean (`git status --porcelain` in
-   the source dir). A dirty tree blocks the action, and the preview lists the
-   stray files, since chezmoi's auto-commit would sweep them into its commit.
+1. **Pre-flight.** When chezmoi's `git.autoCommit` is on, the source tree
+   must be clean (`git status --porcelain` in the source dir). A dirty tree
+   blocks the action, and the preview lists the stray files, since chezmoi's
+   auto-commit would sweep them into its commit. The pre-flight runs before
+   the preview's dry run too: chezmoi auto-commits a dirty tree even on a
+   `--dry-run` of a command that writes the source.
 2. **Preview modal.** The exact command, the targets, and a dry-run result
    (`chezmoi <cmd> --dry-run --verbose` where chezmoi supports it, else a
    computed diff). Batch actions get a per-file summary with expandable diffs.
@@ -93,7 +101,14 @@ reset, external refresh, edit, update) goes through the same four steps:
 A global `--dry-run` (`-n`) passes `-n` to every chezmoi call and marks the
 header `DRY RUN`.
 
-*Where:* `docs/spec.md` §5 (Write flow).
+*Amended 2026-10:* the clean-tree block applies only when `git.autoCommit` is
+on. With it off nothing sweeps stray files into a commit, and every write that
+changes the source leaves the tree dirty, so blocking would stop the user
+after each one. Instead the preview lists the uncommitted files as a warning,
+and the result says the change is waiting uncommitted. The same amendment
+lets interactive writes (edit, merge) skip steps 2 and 3 (DEC-4).
+
+*Where:* `docs/spec.md` §5 (Write flow), §8.
 
 ## DEC-9: Restore from a commit stays in the Repo view (2026-10)
 
@@ -141,3 +156,130 @@ for display. It prefers chezmoi's machine-readable output (`--format=json`,
 `doctor`).
 
 *Where:* `docs/spec.md` §1 (Non-goals), §10.
+
+## DEC-14: Drift direction from status plus the last-written hash (2026-10)
+
+`chezmoi status` prints `MM` both when only the target changed and when both
+sides did, so its columns alone can't tell `you→` from `both`. cheztui
+classifies each status row like this:
+
+- second column `R`: `run`;
+- first column blank, second set: `src→`;
+- first column set: `you→` when the target state's contents hash equals the
+  `contentsSHA256` chezmoi recorded when it last wrote the entry (its
+  `entryState`, from `chezmoi state dump --format=json`), else `both`.
+
+The target-state contents come from `chezmoi dump --format=json` over the rows
+whose first column is set; cheztui hashes them in memory and keeps nothing.
+Rows whose second column is blank are not drift (chezmoi doesn't list them).
+
+Each row has one default fix, run by `enter`: the first line of this table
+that matches.
+
+| Row | Default fix |
+|---|---|
+| `run` | apply (runs the script) |
+| `src→` | apply |
+| `you→`, the target was deleted (first column `D`) | forget |
+| `you→`, a template | merge (`chezmoi re-add` skips templates without a word) |
+| `you→`, a directory or symlink | apply, with a warning that it overwrites your change |
+| `you→` | re-add |
+| `both`, the target was deleted | apply |
+| `both` | merge |
+
+Comparing status with a re-render of the template each time was the
+alternative; the recorded hash is what chezmoi itself uses to say "has changed
+since chezmoi last wrote it", so cheztui agrees with chezmoi's own prompt.
+
+*Where:* `docs/spec.md` §6 (Drift).
+
+## DEC-15: Row tags come from chezmoi, not from source filenames (2026-10)
+
+`chezmoi managed --format=json` gives paths only. cheztui gets `tmpl`, `enc`
+and `ext` from `chezmoi managed --include=templates|encrypted|externals`, and
+`dir`, `link` and `exec` from the `type` and `perm` fields of
+`chezmoi dump --format=json`. Decoding prefixes such as `encrypted_` or
+`executable_` would parse the source state format, which DEC-13 rules out. The
+one filename check left is `cheztui edit`'s `.tmpl` test on the source path.
+
+*Where:* `docs/spec.md` §6 (Drift), §10.
+
+## DEC-16: Apply and forget after a preview pass `--force`; apply-all ticks only safe rows (2026-10)
+
+`chezmoi apply` on a target the user changed stops to ask "has changed since
+chezmoi last wrote it", `chezmoi forget` asks before every removal, and with
+`--no-tty` those prompts fail. The preview modal is cheztui's confirmation, so
+apply and forget run with `--force`, for the dry run and for the real run. Because of that, `A` (apply all) lists every drift row
+but ticks only `src→` and `run` rows; `you→` and `both` rows start unticked,
+marked as overwriting the user's change, and the user ticks them on purpose.
+
+*Where:* `docs/spec.md` §5 (Write flow), §6 (Drift).
+
+## DEC-17: Masking ships with v0.1 (2026-10)
+
+The first draft placed masking in v0.4 with the Secrets view. v0.1's diff pane
+and template toggle would then show rendered secrets and decrypted files in
+the clear, so masking (DEC-10) ships with v0.1 and the Secrets view stays in
+v0.4. The rules that the first draft left open:
+
+- The TUI masks every diff and rendered body it displays, whatever the file.
+- A template whose source calls a password-manager function is masked whole:
+  cheztui can't map a rendered line back to the call that produced it.
+- `cheztui edit` and `cheztui add` mask their diff only for encrypted targets
+  and `always_mask` files. Other sources are plain text the agent already
+  read, and a masked diff would hide the change it is checking. `--reveal`
+  shows the diff in the clear.
+- A masked value prints as `********`, whatever its length.
+
+*Where:* `docs/spec.md` §5 (Secrets), §8, §12.
+
+## DEC-18: How `cheztui edit` hands the change to chezmoi (2026-10)
+
+cheztui computes the new text in memory first: for an encrypted source it
+reads the plaintext with `chezmoi decrypt`. It then runs
+`chezmoi edit --apply --hardlink=false` with `cheztui _editor` as the editor.
+The ops spec and the hash of the expected result reach `_editor` through a
+temporary file (mode 0600, deleted afterwards) named by the
+`CHEZTUI_EDIT_SPEC` environment variable. `_editor` re-applies the spec to the
+file chezmoi hands it (plaintext, for an encrypted source) and refuses, writing
+nothing, unless the result matches the expected hash, so what lands is what
+the dry run showed. It writes in place, never by rename. `--allow-drift`
+passes `--force`, since applying then overwrites the target's change.
+
+*Where:* `docs/spec.md` §8.
+
+## DEC-19: CLI contracts for v0.1 (2026-10)
+
+- A global `--destination PATH` joins `--source` and `--chezmoi-config`, so
+  tests and unusual setups can point every chezmoi call at one place.
+- `cheztui add` takes one path per call, like `edit` (DEC-11), and refuses a
+  path chezmoi already manages, pointing at `cheztui edit`.
+- `pushed` is `true` when the upstream branch (`@{u}`) contains the new
+  commit after the write, `false` when there is a commit that the upstream
+  doesn't contain (or no upstream), and `null` when no commit was made.
+  cheztui doesn't fetch to decide.
+- `verified` comes from `chezmoi verify <target>`; the `verify` command's
+  failing list comes from `chezmoi status` (rows whose second column is set,
+  scripts included, as `chezmoi verify` counts them).
+- The JSON shapes in `docs/spec.md` §7 and §8 are the contract; fields are
+  only added, never renamed, before 1.0.
+
+*Where:* `docs/spec.md` §7, §8.
+
+## DEC-20: The TUI shows only views that exist (2026-10)
+
+Until a view lands, its tab is absent and its number key does nothing. The
+numbers stay as `docs/spec.md` §4 assigns them, so they don't move as views
+arrive. Placeholder tabs would be keys that don't work, against DEC-3.
+
+*Where:* `docs/spec.md` §4.
+
+## DEC-21: chezmoi 2.60 is the floor (2026-10)
+
+cheztui needs `managed --format=json --path-style=all`, `dump --format=json`,
+`state dump --format=json`, `dump-config --format=json` and `edit
+--hardlink`. It requires chezmoi 2.60 or later, checks `chezmoi --version`
+once per run, and exits 3 (CLI) or shows the error (TUI) below it. Raise the
+floor here when a feature needs a newer chezmoi.
+
+*Where:* `docs/spec.md` §2.
