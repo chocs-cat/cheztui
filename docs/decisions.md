@@ -180,16 +180,21 @@ that matches.
 |---|---|
 | `run` | apply (runs the script) |
 | `src→` | apply |
-| `you→`, the target was deleted (first column `D`) | forget |
+| the target was deleted (first column `D`) | apply (restores it) |
 | `you→`, a template | merge (`chezmoi re-add` skips templates without a word) |
 | `you→`, a directory or symlink | apply, with a warning that it overwrites your change |
 | `you→` | re-add |
-| `both`, the target was deleted | apply |
 | `both` | merge |
 
 Comparing status with a re-render of the template each time was the
 alternative; the recorded hash is what chezmoi itself uses to say "has changed
 since chezmoi last wrote it", so cheztui agrees with chezmoi's own prompt.
+
+*Amended 2026-10:* a deleted target's default fix was forget for `you→` rows.
+It is now apply for every deleted target, which puts the file back. Forget
+removes the file from the source repo, and with autoCommit and autoPush that
+is committed and pushed at once; a file deleted by accident should come back
+on `enter`, not vanish from the repo. Forget stays on `x`.
 
 *Where:* `docs/spec.md` §6 (Drift).
 

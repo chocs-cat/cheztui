@@ -246,11 +246,10 @@ would run.
   |---|---|
   | `run` | apply (runs the script) |
   | `src→` | apply |
-  | `you→`, target deleted (first column `D`) | forget |
+  | target deleted (first column `D`) | apply (restores it; `x` forgets it instead) |
   | `you→`, a template | merge (`chezmoi re-add` skips templates) |
   | `you→`, a directory or symlink | apply, warning that it overwrites your change |
   | `you→` | re-add |
-  | `both`, target deleted | apply |
   | `both` | merge |
 
 - Row tags: `tmpl`, `enc`, `exec`, `link`, `ext`, `dir`. `tmpl`, `enc` and
