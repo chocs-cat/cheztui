@@ -74,6 +74,10 @@ jobs:
     name: conventional commit titles
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # The action reads the pull request through the API, which the default
+    # token can't do without this.
+    permissions:
+      pull-requests: read
     steps:
       - uses: amannn/action-semantic-pull-request@v6
         env:
