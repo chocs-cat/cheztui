@@ -218,7 +218,7 @@ diff.
 - **Whole.** A body is masked whole when the target is encrypted, matches
   `always_mask`, or is a template whose source calls a password-manager
   function. Every line with content becomes `********`; an empty line stays
-  empty. These are the only reasons the CLI masks (DEC-17).
+  empty. The CLI masks only for the first two reasons (DEC-17).
 - **Password-manager functions.** A template calls one when its source has
   one of these names as a whole word, either right after a `|` (spaces
   allowed) or followed by whitespace and the start of an argument (`"`,
