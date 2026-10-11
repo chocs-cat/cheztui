@@ -374,3 +374,74 @@ same files whichever directory chezmoi is pointed at, scratch dirs in tests
 included.
 
 *Where:* `docs/spec.md` §5 (Secrets).
+
+## DEC-27: Recheck pre-flight at execution and retain partial results (2026-10)
+
+A preview can stay open while the source tree changes. Read effective
+chezmoi config and source-repo cleanliness again before executing each
+command group, so confirmation cannot bypass DEC-8. A changed source,
+destination or working tree requires a new plan. Preparation failures never
+count as a clean tree. These checks serialize cheztui's own writes, but do
+not promise a lock against another process.
+
+Collect HEAD before and after each attempted command, including failures:
+chezmoi can commit before a later step fails. Keep ordered per-command
+results, stop on the first failure, and name the groups left unrun. There is
+no rollback; refusing to report an earlier commit would hide a real change.
+No changed HEAD means no reported commit; source changes waiting in the tree
+are distinguished from a clean no-op and a dry run. Front ends refresh after
+execution attempts and cannot cancel a started write or its result collection.
+
+*Where:* `docs/spec.md` §5 (Write flow, Preparation and execution).
+
+## DEC-28: Explicit targets, per-target previews and ordered action groups (2026-10)
+
+Drift actions name their targets and never run on an empty selection. Apply
+and re-add use `--recursive=false` so selecting a directory doesn't apply
+unticked descendants. Forgetting a directory includes all its managed
+descendants in the preview and omits redundant descendant command arguments.
+Eligibility comes from chezmoi metadata and destination file type, not source
+filename prefixes. Excluded rows remain visible with a reason.
+
+Preview each affected target separately, with dry-run verbose output and no
+pager or colour, then execute once per action group. This lets masking use
+the right target without parsing multi-file diff headers. Selected default
+fixes run apply, re-add, then merge, preserving Drift order within each group;
+one modal previews the non-interactive groups and names the later suspended
+merges. Interactive-only actions keep DEC-4's modal-free handoff. Explicit
+selection actions are `a`, `r`, `x`, `M`; `e` and `m` use the current row.
+Apply-all keeps DEC-16's initial ticks; #15's proposed change is not adopted.
+
+*Where:* `docs/spec.md` §5 (Write flow, Drift command plans), §6 (Drift).
+
+## DEC-29: Dry-run mode never launches interactive writes (2026-10)
+
+Global `-n` returns the interactive command and a dry-run result after
+pre-flight, without starting the editor or merge tool. In a scratch setup
+with chezmoi 2.71, `edit --apply --dry-run` invoked the editor and changed the
+source while leaving the destination unchanged. Passing the flag alone would
+therefore violate cheztui's dry-run contract. No predicted diff exists for a
+user edit that hasn't happened; report that the command would run rather than
+inventing one. Normal interactive execution shares pre-flight and result
+collection with the rest of the write path.
+
+*Where:* `docs/spec.md` §5 (Write flow, Interactive dry runs).
+
+## DEC-30: Write diagnostics are masked before front-end storage (2026-10)
+
+Mask stdout and stderr before a write plan, result, front-end error or session
+log stores them. A grouped command's diagnostics cannot reliably be mapped
+back to one target, so mask the output whole if any affected target requires
+whole masking; otherwise use line-level detection without a file-specific
+`never_mask` exemption. Per-target diffs retain their usual masking rules.
+The short error comes from the last original stderr line, masked by the same
+rule, with an action/exit-code fallback for empty stderr. The return code and
+commit result remain visible even when all diagnostic text is masked.
+
+This gives up some diagnostic detail to keep an encrypted or rendered secret
+out of the session log. TUI reveal affects the detail pane only, never stored
+diagnostics. Raw bytes remain transient inside the subprocess/write path.
+If preparation fails before target masking metadata is available, mask the
+diagnostic whole until it can be classified.
+
+*Where:* `docs/spec.md` §5 (Write flow, Diagnostics; Secrets).

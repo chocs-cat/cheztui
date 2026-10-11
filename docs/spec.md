@@ -177,6 +177,116 @@ may have committed part-way.
 Global `--dry-run` (`-n`) mode passes `-n` to every chezmoi call and marks
 the header `DRY RUN`.
 
+**Preparation and execution** (`ops.py`, DEC-27). A prepared plan is data,
+not authorization to bypass pre-flight later. It contains the action, exact
+execution argv (displayed with shell quoting, executed without a shell),
+targets, per-target previews, excluded targets with reasons, overwrite
+warnings, the stray-file list and whether it is blocked. A blocked plan
+contains no dry-run output: no writing chezmoi command has run. Read or git
+failures while preparing propagate as errors; they never mean "clean".
+
+- Each preparation reads effective `dump-config` and porcelain status in
+  its `workingTree`, before any writing dry run. Execution reads them again
+  after confirmation and before each command group; a newly dirty tree with
+  auto-commit on blocks the remaining commands. A changed source,
+  destination or working tree requires a new plan. With auto-commit off,
+  the fresh stray list is a warning. This does not lock out external edits
+  between the check and the command.
+- Execution snapshots `HEAD` immediately before and after each command,
+  even when the command fails. The result reports a commit only when the
+  SHA changed (including an unborn HEAD becoming a commit); its SHA and
+  subject come from git, and `pushed` uses `@{u}` without fetching (DEC-19).
+  An unchanged HEAD gives `commit = null`, `pushed = null`. Remaining source
+  changes say `not committed`; a clean, unchanged tree says `no commit`;
+  a dry run says `dry run`.
+- Each command result carries its action, targets, return code, masked
+  output and error, commit and push state. A batch keeps the results in
+  execution order. Stop at the first failure or pre-flight refusal, name
+  the commands left unrun, and keep earlier results; batches have no
+  rollback. Result collection failing after a command must say that the
+  command ran and reporting failed, rather than claiming nothing changed.
+- The front end refreshes after any execution attempt, including failure
+  or interactive completion. It never executes a cancelled preview or an
+  empty selection. cheztui serializes its own write attempts; cancellation
+  of a waiting task must not kill a started write or abandon its result
+  collection (§5, cancellation). Reads remain cancellable.
+
+**Drift command plans** (DEC-28). Commands always name their targets: an
+empty target list never becomes an unscoped chezmoi call.
+
+| Action | Execution arguments after the global flags |
+|---|---|
+| apply | `apply --force --recursive=false <targets…>` |
+| re-add | `re-add --recursive=false <targets…>` |
+| forget | `forget --force <targets…>` |
+| interactive edit | `edit --apply <target>` |
+| interactive merge | `merge <targets…>` |
+
+Apply is non-recursive so ticking a directory cannot apply unticked children.
+Re-add accepts existing regular files with a source, excluding templates,
+scripts and externals; directories, symlinks and deleted targets are excluded
+as §6 describes. Merge accepts regular-file target-state entries with a
+source and an existing regular destination file; unavailable rows are named
+with a reason. Edit requires a source and a file or symlink that chezmoi can
+edit. Forget requires a source and excludes externals, which chezmoi refuses.
+Forgetting a directory also forgets its managed descendants: include them in
+the preview, including entries without drift, and remove redundant descendant
+arguments from the execution command. These checks use chezmoi metadata,
+never decoded source prefixes (DEC-13, DEC-15).
+
+- Explicit `a`, `r`, `x` and `M` use the selected rows (the current row
+  when nothing is selected), deduplicated in Drift order. `e` and `m` use
+  the current row; `M` is the selection merge. With `enter` on a selection,
+  group default fixes in order apply, re-add, merge; targets within each
+  group keep Drift order. A mixed selection has one preview for its
+  non-interactive groups, with a note naming the later merge targets;
+  merge then runs suspended, with its own fresh pre-flight and no dry-run
+  merge. An all-interactive selection skips the modal (DEC-4).
+- Apply-all lists every row, initially ticking exactly `src→` and `run`
+  (DEC-16). Changing ticks rebuilds the command targets. Only ticked rows
+  execute; warnings for applying `you→` or `both` rows don't depend on
+  that row's default fix. This preserves DEC-14's classification even for
+  a never-written target (#15 remains a design question).
+- For each affected target, preview apply, re-add or forget using the same
+  action flags plus `--dry-run --verbose --no-pager --color=false
+  --use-builtin-diff`. A directory forget previews its affected descendants
+  as well; its aggregate diff uses whole masking if any descendant needs
+  it, and otherwise line-level masking without `never_mask`. Keep
+  previews per target rather than guessing target boundaries in a combined
+  diff. The execution remains one chezmoi call per action group. Preview
+  failure blocks execution and reports the error; no partial preview is
+  confirmable.
+- Mask each preview before returning it to the front end, using its target,
+  `enc` tag, and password-manager call detection on a template's source.
+  Source text is read through chezmoi (`execute-template` with `include`
+  of the source's absolute path, quoted as a Go string; `include` returns
+  [literal contents](https://www.chezmoi.io/reference/templates/functions/include/)
+  without rendering them). Rendered text and decrypted bodies stay in memory.
+  Use the destination for globs (DEC-26).
+  The diff path uses §5 Secrets' hunk rules, not body masking.
+
+**Interactive dry runs** (DEC-29). Global `-n` never launches an editor or
+merge tool: chezmoi's `edit --apply --dry-run` still edits the source.
+Return the command that would run and a `dry run` result, with no commit or
+push state, after pre-flight. There is no predicted diff for an edit the user
+hasn't made. Normal interactive execution uses the same pre-flight and HEAD
+result collection as other writes; the TUI only owns suspension and terminal
+I/O. Every actual chezmoi invocation still goes through `chezmoi.py`.
+
+**Diagnostics** (DEC-30). Command stdout and stderr are decoded with UTF-8
+replacement and masked before entering a plan, result, exception used by a
+front end, or session log. For output that cannot be assigned to one target,
+mask it whole when any affected target needs whole masking (encrypted,
+`always_mask`, password-manager template); otherwise apply the line-level
+rules with no `never_mask` exemption. Keep the original last stderr line as
+the source of the short error and mask it too; the log retains the full
+masked diagnostic, so whole masking cannot hide whether the command failed.
+If stderr is empty, use `chezmoi <action> exited <code>`. Raw subprocess
+bytes are transient and never stored in front-end data. A TUI reveal changes
+only its detail pane, never these stored diagnostics.
+If preparation fails before masking metadata is known, mask its diagnostic
+whole rather than returning potentially rendered secret text.
+
 ### Refresh
 
 - Watches the source directory and the managed targets (via `watchfiles`) and
@@ -748,6 +858,11 @@ src/cheztui/
   process environment. The default runner uses
   `asyncio.create_subprocess_exec`, and kills the child when the awaiting
   task is cancelled (DEC-6). `git.py` takes the same runner.
+- Interactive writes can take a front-end-supplied runner for terminal I/O;
+  `ops.py` still owns the command, pre-flight and result, and `chezmoi.py`
+  invokes that runner with the usual full argv. The TUI supplies suspension,
+  not a second write implementation. Write tasks protect the subprocess and
+  result collection from the read runner's cancellation behavior (§5).
 - Every chezmoi call is `chezmoi --no-tty`, then `--config`, `--source`,
   `--destination` and `--dry-run` when set, then the command. The version
   check (DEC-21) runs `chezmoi --version` once per run, called by the front
