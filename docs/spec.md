@@ -199,9 +199,11 @@ the header `DRY RUN`.
     (`ghp_`, `gho_`, `github_pat_`), OpenAI/Anthropic-style `sk-…`, AWS
     access keys (`AKIA…`), Slack (`xox…`), and PEM private-key blocks.
 - Two config glob lists adjust detection per file. `never_mask` turns
-  masking off for files where the name patterns misfire (a keybindings file
-  full of `key = …`). `always_mask` masks the whole body of files like
-  `.netrc`, `.env` or `~/.ssh/id_*`.
+  off the line-level detection (name patterns and token formats) for files
+  where it misfires (a keybindings file full of `key = …`); an encrypted
+  file or password-manager template in it is still masked whole.
+  `always_mask` masks the whole body of files like `.netrc`, `.env` or
+  `~/.ssh/id_*`, and wins over `never_mask` (DEC-26).
 - A masked value prints as `********`, whatever its length.
 - `R` reveals for the current detail view only; moving away re-masks.
 - Nothing decrypted is ever written to disk, the session log, or `--json`
@@ -209,6 +211,61 @@ the header `DRY RUN`.
 - `cheztui edit` and `cheztui add` mask their diff only for encrypted
   targets and `always_mask` files; other sources are plain text the agent
   already read (§8, DEC-17).
+
+**Detection rules** (`secrets.py`). One call masks one target's body or
+diff.
+
+- **Whole.** A body is masked whole when the target is encrypted, matches
+  `always_mask`, or is a template whose source calls a password-manager
+  function. Every line with content becomes `********`; an empty line stays
+  empty. These are the only reasons the CLI masks (DEC-17).
+- **Password-manager functions.** A template calls one when its source has
+  one of these names as a whole word, either right after a `|` (spaces
+  allowed) or followed by whitespace and the start of an argument (`"`,
+  `` ` ``, `$`, `(`, `.`): `onepassword…`, `bitwarden…`, `lastpass…`,
+  `keepassxc…`, `keeper…`, `dashlane…`, `doppler…`, `gopass…`, `rbw…`,
+  `protonPass…`, `awsSecretsManager…`, `hcpVaultSecret…`, `ejsonDecrypt…`
+  (each with any letters after it), and `azureKeyVault`, `pass`,
+  `passFields`, `passRaw`, `passhole`, `secret`, `secretJSON`, `keyring`,
+  `vault`, `decrypt`. The call form keeps a shell `pass` or a word in a
+  comment from masking a template; template delimiters aren't parsed.
+- **Line level** (the TUI only; off for `never_mask` files). Each line is
+  checked on its own, and the spans found are merged, each run becoming one
+  `********`:
+  - *Name patterns.* A line `KEY = VALUE` or `KEY: VALUE`: optional
+    indentation, then optionally `export ` or `- `, then KEY (letters,
+    digits, `_`, `.`, `-`, optionally in single or double quotes), then
+    `=` or `:` with optional spaces around it. When any `mask_patterns`
+    entry matches KEY (`re.search`, ignoring case), the span is the inside
+    of a quoted VALUE (up to the closing quote, or the end of the line), or
+    else the rest of the line less trailing whitespace and a trailing `,`.
+    A value that is empty, `{` or `[` is left alone.
+  - *Token formats* (when `token_formats` is on), each not preceded by a
+    letter, digit or `_`: `gh[pousr]_[A-Za-z0-9]{20,}`,
+    `github_pat_[A-Za-z0-9_]{20,}`, `sk-[A-Za-z0-9_-]{20,}`,
+    `(AKIA|ASIA)[A-Z0-9]{16}` not followed by a letter or digit,
+    `xox[abposr]-[A-Za-z0-9-]{10,}`.
+  - *PEM blocks* (also under `token_formats`). From a line containing
+    `-----BEGIN … PRIVATE KEY-----` to the next line containing
+    `-----END … PRIVATE KEY-----`, every line between becomes `********`
+    (the two marker lines stay); with no END line, to the end of the body.
+- **Diffs.** In a unified diff only hunk lines are masked: each keeps its
+  first character (` `, `+`, `-`) and the rest is masked as a line of the
+  body. A hunk's extent comes from the counts in its
+  `@@ -a[,b] +c[,d] @@` line (a missing count is 1; an empty line inside
+  a hunk is an empty context line). Lines outside hunks (`diff`, `index`,
+  `---`, `+++`, mode lines, `@@` lines, `\ No newline at end of file`)
+  pass through. An open PEM block runs on across hunks and ends at a
+  `diff ` line outside a hunk.
+- **Globs** (`never_mask`, `always_mask`) are matched against the target's
+  absolute path, case-sensitively. A leading `~/` is the destination
+  directory (`$HOME` unless `--destination` says otherwise, DEC-26); a
+  pattern that starts with neither `~/` nor `/` is relative to it. `*` and
+  `?` don't match `/`, and match a leading `.`; `[…]` is a character class;
+  `**` as a whole path segment matches zero or more segments, so `a/**`
+  matches `a` itself and `**/.env` matches `~/.env`.
+- Line endings are kept, and a body or diff with nothing to mask comes back
+  unchanged.
 
 ### External editor and pager
 

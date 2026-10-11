@@ -356,3 +356,21 @@ look" for "drifted". The read produced no result, so nothing goes on stdout,
 with or without `--json`.
 
 *Where:* `docs/spec.md` §7.
+
+## DEC-26: What `never_mask` turns off, and where `~` points (2026-10)
+
+`never_mask` exists for files where the line-level detection misfires: a
+keybindings file full of `key = …` lines. So it turns off only that
+detection, name patterns and token formats. A file that is encrypted, or a
+template that calls a password-manager function, is still masked whole,
+since those reasons are facts about the file, not guesses about a line; a
+glob written for a noisy config shouldn't reveal a secret store. A file in
+both lists is masked whole: `always_mask` is the explicit request to hide.
+
+A leading `~/` in either list means chezmoi's destination directory, which is
+`$HOME` unless `--destination` says otherwise. Every masked body belongs to a
+managed target, and targets live under the destination, so the globs mean the
+same files whichever directory chezmoi is pointed at, scratch dirs in tests
+included.
+
+*Where:* `docs/spec.md` §5 (Secrets).
