@@ -175,3 +175,136 @@ def test_empty_whole_body_and_frozen_result(tmp_path: Path):
     result = Masked("text", False)
     with pytest.raises(FrozenInstanceError):
         setattr(result, "text", "other")  # noqa: B010 (test mutation of a frozen result)
+
+
+TOKENS = [
+    *("gh" + kind + "_" + "A" * 36 for kind in "pousr"),
+    "github_pat_" + "A_" * 20,
+    "sk-" + "a_B-" * 8,
+    *(prefix + "A" * 16 for prefix in ("AKIA", "ASIA")),
+    *("xox" + kind + "-" + "aB1-" * 5 for kind in "abposr"),
+]
+
+
+@pytest.mark.parametrize("token", TOKENS, ids=lambda t: t[:4])
+@pytest.mark.parametrize("wrapper", ["export GH={}", "https://example.test/?credential={}&x=1"])
+def test_token_formats(tmp_path: Path, token: str, wrapper: str):
+    text = wrapper.format(token)
+    result = Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config")
+    assert result == Masked(wrapper.format(MASK), True)
+
+
+@pytest.mark.parametrize("token", TOKENS, ids=lambda t: t[:4])
+@pytest.mark.parametrize("prefix", ["x", "1", "_"])
+def test_token_boundaries(tmp_path: Path, token: str, prefix: str):
+    text = "value=" + prefix + token
+    assert Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config") == Masked(text, False)
+
+
+@pytest.mark.parametrize("suffix", ["A", "1"])
+@pytest.mark.parametrize("prefix", ["AKIA", "ASIA"])
+def test_aws_end_boundary(tmp_path: Path, prefix: str, suffix: str):
+    text = "value=" + prefix + "A" * 16 + suffix
+    assert Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config") == Masked(text, False)
+
+
+@pytest.mark.parametrize("token", TOKENS, ids=lambda t: t[:4])
+def test_token_formats_disabled(tmp_path: Path, token: str):
+    masker = Masker(SecretsConfig(token_formats=False), tmp_path)
+    assert masker.mask("value=" + token, tmp_path / "config") == Masked("value=" + token, False)
+    assert masker.mask("token=" + token, tmp_path / "config") == Masked("token=" + MASK, True)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('api_key = "v"', 'api_key = "********"'),
+        ("  password: v", "  password: ********"),
+        ("- token: v", "- token: ********"),
+        ("export GITHUB_TOKEN=v", "export GITHUB_TOKEN=********"),
+        ('"secret": "v",', '"secret": "********",'),
+        ("Password=v", "Password=********"),
+        ("passwd = 'v'  # comment", "passwd = '********'  # comment"),
+        ("'api-key': 'v',", "'api-key': '********',"),
+        ("section.api_key=v", "section.api_key=********"),
+        ("token=v # trailing comment", "token=********"),
+        ('secret = "unterminated', 'secret = "********'),
+        ("token=value,  \t", "token=********,  \t"),
+        ("token=value  ,  ", "token=********  ,  "),
+        ("token=", "token="),
+        ("token=  ", "token=  "),
+        ('token=""', 'token=""'),
+        ("secret: {", "secret: {"),
+        ("secret: [  ", "secret: [  "),
+        ("other=v", "other=v"),
+        ("prefix token=v", "prefix token=v"),
+        ("token v", "token v"),
+        ("token+=v", "token+=v"),
+    ],
+)
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+def test_name_patterns(tmp_path: Path, text: str, expected: str, ending: str):
+    result = Masker(SecretsConfig(), tmp_path).mask(text + ending, tmp_path / "config")
+    assert result == Masked(expected + ending, text != expected)
+
+
+def test_custom_name_patterns_replace_defaults(tmp_path: Path):
+    masker = Masker(SecretsConfig(mask_patterns=("credential$",)), tmp_path)
+    assert masker.mask("credential=v\npassword=v", tmp_path / "config") == Masked(
+        "credential=" + MASK + "\npassword=v", True
+    )
+
+
+def test_merged_and_separate_spans(tmp_path: Path):
+    token = "ghp_" + "A" * 36
+    masker = Masker(SecretsConfig(), tmp_path)
+    assert masker.mask('token="' + token + '"', tmp_path / "config") == Masked(
+        'token="' + MASK + '"', True
+    )
+    # Separate spans preserve the closing quote between them.
+    separate = 'secret="' + "a" * 20 + '"sk-' + "B" * 20
+    assert masker.mask(separate, tmp_path / "config") == Masked(
+        'secret="' + MASK + '"' + MASK, True
+    )
+    assert masker.mask(token + " / " + token, tmp_path / "config") == Masked(
+        MASK + " / " + MASK, True
+    )
+
+
+@pytest.mark.parametrize("kind", ["RSA ", "OPENSSH ", ""])
+@pytest.mark.parametrize("closed", [False, True])
+def test_pem_blocks(tmp_path: Path, kind: str, closed: bool):
+    begin = "-----BEGIN " + kind + "PRIVATE KEY-----"
+    end = "-----END " + kind + "PRIVATE KEY-----"
+    text = begin + "\nbody one\n\nbody two\n"
+    expected = begin + "\n" + MASK + "\n" + MASK + "\n" + MASK + "\n"
+    if closed:
+        text += end + "\nafter\n"
+        expected += end + "\nafter\n"
+    assert Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config") == Masked(
+        expected, True
+    )
+    assert Masker(SecretsConfig(token_formats=False), tmp_path).mask(
+        text, tmp_path / "config"
+    ) == Masked(text, False)
+
+
+def test_public_pem_unchanged(tmp_path: Path):
+    text = "-----BEGIN PUBLIC KEY-----\nbody\n-----END PUBLIC KEY-----"
+    assert Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config") == Masked(text, False)
+
+
+@pytest.mark.parametrize("line_level", [True, False])
+def test_line_level_opt_out(tmp_path: Path, line_level: bool):
+    text = 'token = "v"\n' + "ghp_" + "A" * 36 + "\n-----BEGIN PRIVATE KEY-----\nbody\n"
+    target = tmp_path / (".config/karabiner/config" if line_level else "config")
+    assert Masker(SecretsConfig(), tmp_path).mask(text, target, line_level=line_level) == Masked(
+        text, False
+    )
+
+
+def test_template_call_masks_rendered_body(tmp_path: Path):
+    source = '{{ onepassword "item" }}'
+    assert Masker(SecretsConfig(), tmp_path).mask(
+        "rendered value\n", tmp_path / "config", secret_template=calls_secret_function(source)
+    ) == Masked(MASK + "\n", True)

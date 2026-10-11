@@ -19,6 +19,22 @@ _FUNCTIONS = (
 )
 _SECRET_CALL = re.compile(rf"(?:\|\s*\b{_FUNCTIONS}\b|\b{_FUNCTIONS}\b\s+[\"`$(.])")
 _ENDINGS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_KEY_VALUE = re.compile(
+    r"^[ \t]*(?:export[ \t]+|-[ \t]+)?(?P<quote>['\"]?)(?P<key>[A-Za-z0-9_.-]+)"
+    r"(?P=quote)[ \t]*[=:][ \t]*"
+)
+_TOKENS = tuple(
+    re.compile(r"(?<![A-Za-z0-9_])" + pattern)
+    for pattern in (
+        r"gh[pousr]_[A-Za-z0-9]{20,}",
+        r"github_pat_[A-Za-z0-9_]{20,}",
+        r"sk-[A-Za-z0-9_-]{20,}",
+        r"(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])",
+        r"xox[abposr]-[A-Za-z0-9-]{10,}",
+    )
+)
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")
 
 
 @dataclass(frozen=True)
@@ -118,6 +134,62 @@ class Masker:
             or any(p.fullmatch(str(target)) is not None for p in self._always)
         )
 
+    def _name_span(self, content: str) -> tuple[int, int] | None:
+        match = _KEY_VALUE.match(content)
+        if match is None or not any(p.search(match["key"]) for p in self._patterns):
+            return None
+        start = match.end()
+        if start == len(content):
+            return None
+        if content[start] in "\"'":
+            quote = content[start]
+            start += 1
+            end = content.find(quote, start)
+            if end == -1:
+                end = len(content)
+        else:
+            end = len(content.rstrip())
+            if content[end - 1 : end] == ",":
+                end = len(content[: end - 1].rstrip())
+            if content[start:end] in ("{", "["):
+                return None
+        return (start, end) if start < end else None
+
+    def _mask_line(
+        self, content: str, *, whole: bool, line_level: bool, pem: bool
+    ) -> tuple[str, bool, bool]:
+        """Mask content without a line ending or diff prefix; carry PEM state."""
+        if whole:
+            return (MASK if content else "", pem, bool(content))
+        if not line_level:
+            return content, pem, False
+        if self._token_formats:
+            if _PEM_END.search(content):
+                return content, False, False
+            if _PEM_BEGIN.search(content):
+                return content, True, False
+            if pem:
+                return MASK, True, True
+        spans: list[tuple[int, int]] = []
+        name_span = self._name_span(content)
+        if name_span is not None:
+            spans.append(name_span)
+        if self._token_formats:
+            spans.extend(match.span() for pattern in _TOKENS for match in pattern.finditer(content))
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        output: list[str] = []
+        cursor = 0
+        for start, end in merged:
+            output.extend((content[cursor:start], MASK))
+            cursor = end
+        output.append(content[cursor:])
+        return "".join(output), pem, bool(merged)
+
     def mask(
         self,
         text: str,
@@ -129,14 +201,17 @@ class Masker:
         line_level: bool = True,
     ) -> Masked:
         whole = self.masks_whole(target, encrypted=encrypted, secret_template=secret_template)
-        if not whole:
+        line_level = line_level and not any(p.fullmatch(str(target)) for p in self._never)
+        if not whole and not line_level:
             return Masked(text, False)
         output: list[str] = []
         masked = False
+        pem = False
         for line in text.splitlines(keepends=True):
             content, ending = _split_ending(line)
-            if content:
-                content = MASK
-                masked = True
+            content, pem, changed = self._mask_line(
+                content, whole=whole, line_level=line_level, pem=pem
+            )
+            masked |= changed
             output.append(content + ending)
         return Masked("".join(output), masked)
