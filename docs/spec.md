@@ -608,6 +608,7 @@ hostname = "work-laptop"
 src/cheztui/
   cli.py          argparse entry; `cheztui` → TUI, subcommands → ops
   ops.py          all behaviour; returns dataclasses; used by CLI and TUI
+  runner.py       the async subprocess runner chezmoi.py and git.py share
   chezmoi.py      async wrapper around the chezmoi binary (--no-tty,
                   --config/--source, -n); typed parsers for each JSON output
   git.py          source-repo queries (porcelain status, ahead/behind, log, HEAD)

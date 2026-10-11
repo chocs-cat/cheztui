@@ -16,6 +16,7 @@ each depending only on the ones above it; they arrive with the milestones:
 
 | Module | Role |
 |---|---|
+| `runner.py` | the async subprocess runner `chezmoi.py` and `git.py` share, which tests can swap |
 | `chezmoi.py` | async wrapper over the `chezmoi` binary, with typed parsers for its output |
 | `git.py` | source-repo queries: porcelain status, ahead/behind, log, `HEAD` |
 | `config.py` | `~/.config/cheztui/config.toml`, loaded and saved with tomlkit |

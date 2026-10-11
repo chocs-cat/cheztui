@@ -20,6 +20,9 @@ jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    env:
+      # The floor chezmoi (DEC-21, DEC-24): raise it with MIN_VERSION.
+      CHEZMOI_VERSION: 2.60.0
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +33,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python }}
+      - name: Install chezmoi
+        run: |
+          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin" -t "v$CHEZMOI_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: chezmoi --version
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - run: uv run pytest -q -rs
 
   package:
     # Build the sdist and wheel, then install each into a fresh environment
