@@ -163,6 +163,8 @@ def load(path: Path | None = None) -> Config:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return Config(path)
+    except OSError as e:
+        raise ConfigError(path, f"can't read the file: {e.strerror or e}") from None
     except UnicodeDecodeError as e:
         raise ConfigError(path, f"not valid TOML: {e}") from None
     try:

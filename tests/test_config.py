@@ -188,6 +188,14 @@ def test_a_file_that_is_not_utf8_is_invalid_toml(path: Path):
         load(path)
 
 
+def test_a_file_that_cant_be_read_is_a_config_error(path: Path):
+    # A directory at the path; a permission test is unreliable when run as root.
+    path.mkdir(parents=True)
+    with pytest.raises(ConfigError, match="can't read the file: ") as exc:
+        load(path)
+    assert exc.value.path == path
+
+
 @pytest.mark.parametrize(
     "key", ["secrets.mask_patterns", "secrets.never_mask", "adopt.roots", "ui", "nope"]
 )
