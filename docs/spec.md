@@ -52,7 +52,7 @@ Same shape as corral and tack.
 | Releases | release-please, Conventional Commits, CI-gated `master` |
 | Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`), Claude plugin manifest (`.claude-plugin/`) |
 | Platforms | macOS and Linux |
-| Requires | chezmoi ≥ 2.60, checked once per run; below it the CLI exits 3 and the TUI shows the error (DEC-21) |
+| Requires | chezmoi ≥ 2.60, checked once per run; below it the CLI exits 3 and the TUI shows the error. A version string that isn't `vX.Y.Z` (a development build prints `dev`) passes (DEC-21) |
 
 The repo starts private and goes public when the maintainer decides to publish
 it. The logo is `docs/logo-light.svg` and `docs/logo-dark.svg`.
@@ -142,13 +142,14 @@ it is never written to disk.
 Every write (apply, re-add, add, merge, forget, destroy, chattr, ignore,
 state reset, external refresh, edit, update) goes through one path:
 
-1. **Pre-flight.** When chezmoi's `git.autoCommit` is on (read from
-   `chezmoi dump-config --format=json`), the source tree must be clean
+1. **Pre-flight.** When chezmoi auto-commits (`git.autoCommit` or
+   `git.autoPush` is on, read from `chezmoi dump-config --format=json`:
+   chezmoi commits when either is set, DEC-23), the source tree must be clean
    (`git status --porcelain` in the source dir). If it isn't, the preview
    says so and lists the stray files; the action is blocked until resolved
    (option: open the Repo view). The pre-flight runs before the preview's
    dry run, because chezmoi auto-commits a dirty tree even on a `--dry-run`
-   of a command that writes the source. With `git.autoCommit` off, a dirty
+   of a command that writes the source. When chezmoi doesn't auto-commit, a dirty
    tree doesn't block: the preview lists the uncommitted files as a warning
    (DEC-8).
 2. **Preview modal.** Shows the exact command, the targets, and a dry-run
@@ -479,7 +480,7 @@ It runs the skill's whole procedure as one command:
 3. **Drift?** If `chezmoi status <target>` is non-empty, refuse (exit 1):
    applying would clobber the target. `--allow-drift` overrides, and passes
    `--force` so the apply overwrites the target's change.
-4. **Clean source tree?** When `git.autoCommit` is on, refuse if
+4. **Clean source tree?** When chezmoi auto-commits (§5, DEC-23), refuse if
    `git status --porcelain` in the source dir is non-empty, listing the
    stray files. With it off, warn and go on (DEC-8).
 5. **Apply ops** to the source text in memory, with the same rules as
@@ -554,12 +555,19 @@ new files, exit codes, and read commands for looking before acting.
 
 ## 9. Configuration
 
-`~/.config/cheztui/config.toml` (under `$XDG_CONFIG_HOME` when set). A
-missing file means the defaults below; cheztui creates the file only when
-the settings screen saves. An unknown key is kept and ignored; a value of
-the wrong type, or a file that isn't valid TOML, is a config error (CLI
-exit 2; the TUI shows the error and doesn't start). Saving keeps the file's
-comments and order (tomlkit).
+`~/.config/cheztui/config.toml` (`$XDG_CONFIG_HOME/cheztui/config.toml`
+when `XDG_CONFIG_HOME` is set and not empty). A missing file means the
+defaults below; cheztui creates the file only when the settings screen
+saves. An unknown key or table is kept and ignored. A config error (CLI
+exit 2; the TUI shows the error and doesn't start) is any of: a file that
+isn't valid TOML; a known table that isn't a table; a value of the wrong
+type (a boolean is not an integer, nor an integer a boolean); a negative
+`ui.diff_context` or `refresh.debounce_ms`; a `ui.narrow_breakpoint` below
+1; a `secrets.mask_patterns` entry that isn't a valid Python regular
+expression. `ui.theme` must be a non-empty string; whether Textual knows the
+theme is checked when the TUI starts, with the same error. Saving keeps the
+file's comments and order (tomlkit) and writes the file in place, so a
+symlinked config stays a symlink.
 
 The settings screen (`,`) edits the scalar settings (`ui.*`, `refresh.*`,
 `secrets.token_formats`) in place; `e` there opens the file in `$EDITOR` for
@@ -626,7 +634,25 @@ src/cheztui/
   the write's own refresh covers them. `refresh.watch = false` leaves only
   `g` and the post-write refresh.
 - `chezmoi.py` takes a runner, so TUI tests swap in `tests/fake_chezmoi.py`
-  and integration tests run the real binary against scratch dirs.
+  and integration tests run the real binary against scratch dirs. A runner
+  is an async callable `(argv, *, cwd=None, env=None, stdin=None)` returning
+  the exit code, stdout and stderr as bytes; `env` is merged over the
+  process environment. The default runner uses
+  `asyncio.create_subprocess_exec`, and kills the child when the awaiting
+  task is cancelled (DEC-6). `git.py` takes the same runner.
+- Every chezmoi call is `chezmoi --no-tty`, then `--config`, `--source`,
+  `--destination` and `--dry-run` when set, then the command. The version
+  check (DEC-21) runs `chezmoi --version` once per run, called by the front
+  end at start; the reads don't repeat it. `status` runs with
+  `--path-style=absolute`.
+- Errors: chezmoi missing, too old, or printing output its parser can't read
+  is "chezmoi missing or broken" (CLI exit 3); a chezmoi command that exits
+  non-zero is a failure carrying its stderr, whose last line is what the log
+  line shows (§5).
+- `git.py` runs git in chezmoi's `workingTree` (from `dump-config`), with
+  `GIT_OPTIONAL_LOCKS=0` so its reads never take the index lock from a
+  chezmoi write. The stray-file list is `git status --porcelain=v1 -z
+  --untracked-files=all`, new paths for renames.
 - Prefer machine-readable output (`--format=json`, `--path-style=all`,
   `--no-pager`); parse text only where chezmoi has no JSON (`status`,
   `doctor`), with parsers that handle paths containing spaces.
@@ -639,7 +665,15 @@ src/cheztui/
   `XDG_CONFIG_HOME` set to scratch dirs too. One shared pytest fixture
   builds this setup; the scratch config never enables `autoPush`, and the
   scratch repo has no remote (a test of push state sets a local branch as
-  the upstream).
+  the upstream). The fixture also sets `XDG_DATA_HOME`, `XDG_CACHE_HOME`
+  and `XDG_STATE_HOME` to scratch dirs, `GIT_CONFIG_NOSYSTEM=1`, and
+  `GIT_CONFIG_GLOBAL` to a scratch gitconfig with a test identity. The
+  chezmoi config lives outside every ancestor of the scratch home: chezmoi
+  refuses to manage files under its own config dir.
+- **Recorded fixtures** (`tests/fixtures/chezmoi/`) come from real chezmoi
+  in a scratch setup, with the scratch root replaced by `/scratch` so no
+  machine path is committed; a README there names the chezmoi version and
+  the commands.
 - **Unit:** parsers against recorded chezmoi output fixtures; ops engine
   (every op, count assertions, skip, failure leaves file untouched);
   masking.
@@ -649,7 +683,10 @@ src/cheztui/
   (drift in both directions, scripts, externals, errors).
 - **TUI:** `App.run_test()` + snapshot tests (pytest-textual-snapshot) for
   each view and the preview modal.
-- CI: macOS and Linux, pytest, ruff check/format, ty, packaging check.
+- CI: macOS and Linux, pytest, ruff check/format, ty, packaging check. The
+  test job installs chezmoi at the floor version (DEC-21), so integration
+  tests run in CI against the oldest chezmoi cheztui supports, while a
+  maintainer's machine runs them against a current one (DEC-24).
 
 ## 12. Milestones
 

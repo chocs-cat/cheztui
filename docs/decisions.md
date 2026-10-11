@@ -107,6 +107,8 @@ changes the source leaves the tree dirty, so blocking would stop the user
 after each one. Instead the preview lists the uncommitted files as a warning,
 and the result says the change is waiting uncommitted. The same amendment
 lets interactive writes (edit, merge) skip steps 2 and 3 (DEC-4).
+"autoCommit on" means chezmoi auto-commits: `git.autoCommit` or
+`git.autoPush` (DEC-23).
 
 *Where:* `docs/spec.md` §5 (Write flow), §8.
 
@@ -285,7 +287,12 @@ cheztui needs `managed --format=json --path-style=all`, `dump --format=json`,
 `state dump --format=json`, `dump-config --format=json` and `edit
 --hardlink`. It requires chezmoi 2.60 or later, checks `chezmoi --version`
 once per run, and exits 3 (CLI) or shows the error (TUI) below it. Raise the
-floor here when a feature needs a newer chezmoi.
+floor here when a feature needs a newer chezmoi, and raise CI's pinned
+version with it (DEC-24).
+
+*Amended 2026-10:* a version string that isn't `vX.Y.Z` passes the check. A
+chezmoi built from source prints `dev`, and refusing it would lock out the
+people most likely to run a new chezmoi; anything released prints a number.
 
 *Where:* `docs/spec.md` §2.
 
@@ -297,3 +304,28 @@ action takes `X`: like destroy in the Files view, it makes chezmoi delete the
 target, and the capital marks it as destructive. `R` reveals in every view.
 
 *Where:* `docs/spec.md` §6 (Adopt).
+
+## DEC-23: `git.autoPush` counts as autoCommit (2026-10)
+
+chezmoi commits a write when `git.autoPush` is set even with
+`git.autoCommit` off (observed with chezmoi 2.60 and 2.71: a `re-add` under
+`autoPush = true` alone made a commit, then failed to push). Every rule that
+asks whether chezmoi auto-commits (the clean-tree block of DEC-8, `cheztui
+edit`'s step 4) therefore reads it as `git.autoCommit or git.autoPush`.
+Reading `autoCommit` alone would let a dirty tree through to a commit that
+sweeps the stray files in and pushes them. `dump-config --format=json` spells
+the keys `git.autocommit` and `git.autopush`.
+
+*Where:* `docs/spec.md` §5 (Write flow), §8.
+
+## DEC-24: CI runs the integration tests against the floor chezmoi (2026-10)
+
+The integration tests skip when `chezmoi` isn't installed, and CI's runners
+don't have it, so they would never run there. The test job installs chezmoi
+at the floor version from DEC-21 (2.60.0) on Linux and macOS. CI then proves
+the floor is real, and a maintainer's machine, which runs a current chezmoi,
+covers the newest release. Installing the latest in CI instead would leave
+the floor untested; the parsers' recorded fixtures cover one fixed version
+either way.
+
+*Where:* `docs/spec.md` §11; `.github/workflows/ci.yml`.
