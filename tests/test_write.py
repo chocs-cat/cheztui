@@ -6,6 +6,7 @@ git against the scratch setup, never with autoPush or a remote.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 from collections.abc import Callable, Mapping
@@ -643,7 +644,8 @@ async def test_live_previews_write_nothing(scratch: Scratch):
     before = snapshot(scratch)
     cz, rec = recording(scratch)
     ops = live_ops(scratch, cz)
-    for action, name in (("re-add", ".a"), ("apply", ".b"), ("forget", ".c")):
+    cases: tuple[tuple[Action, str], ...] = (("re-add", ".a"), ("apply", ".b"), ("forget", ".c"))
+    for action, name in cases:
         plan = await ops.prepare(action, [rows[name]])
         assert not plan.blocked, plan.error
         assert plan.entries[0].diff, action
@@ -737,3 +739,467 @@ async def test_live_previews_are_masked(scratch: Scratch):
     assert "login" not in diffs[".netrc"]
     assert SECRET not in repr(plan)
     assert plan.entries[1].masking == ("always_mask",)
+
+
+# --- Execution: unit ------------------------------------------------------------
+
+
+def on_write(
+    fake: FakeWrite,
+    action: str,
+    *,
+    returncode: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+    commit: str | None = None,
+) -> None:
+    """Answer the real (non-dry-run) `action` command, optionally moving HEAD."""
+
+    def reply(argv, env):
+        words = subcommand(argv) if argv[0] == "chezmoi" else ()
+        if words[:1] == (action,) and "--dry-run" not in words:
+            if commit is not None:
+                fake.commit(commit)
+            return Completed(argv, returncode, stdout, stderr)
+        return None
+
+    fake.reply(reply)
+
+
+async def prepared(fake: FakeWrite, home: Path, action: Action = "re-add", **kwargs):
+    answer_previews(fake)
+    ops = fake.ops(**kwargs)
+    rows = [
+        row(home / "a", "you", "re-add", columns="MM"),
+        row(home / "b", "you", "re-add", columns="MM"),
+    ]
+    return ops, await ops.prepare(action, rows)
+
+
+@pytest.mark.parametrize(
+    ("upstream", "pushed"), [("contains", True), ("behind", False), (None, False)]
+)
+async def test_execute_reports_commit_and_push(home: Path, upstream, pushed):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    ops, plan = await prepared(fake, home)
+    on_write(fake, "re-add", commit="Update dot_a")
+    fake.upstream = None if upstream is None else set()
+    if upstream == "contains":
+        # `@{u}` contains whatever commit the write makes.
+        fake.reply(
+            lambda argv, env: (
+                Completed(argv, 0, b"", b"")
+                if argv[3:5] == ("merge-base", "--is-ancestor")
+                else None
+            )
+        )
+    result = await ops.execute(plan, confirmed=True)
+    (r,) = result.results
+    assert (r.outcome, r.returncode, r.state) == ("ok", 0, "committed")
+    assert r.commit is not None
+    assert r.commit.subject == "Update dot_a"
+    assert r.pushed is pushed
+    assert result.ok
+    assert result.refresh
+    # One real re-add naming both targets, never fetching.
+    assert [w for w in fake.writes if "--dry-run" not in w] == [
+        ("re-add", "--recursive=false", str(home / "a"), str(home / "b"))
+    ]
+    assert not any("fetch" in c for c in fake.log)
+
+
+@pytest.mark.parametrize(("stray", "state"), [([], "no commit"), (["dot_a"], "not committed")])
+async def test_execute_without_commit(home: Path, stray, state):
+    fake = FakeWrite(dest=home)
+    ops, plan = await prepared(fake, home)
+    fake.stray = stray
+    result = await ops.execute(plan, confirmed=True)
+    (r,) = result.results
+    assert (r.commit, r.pushed, r.state, r.stray) == (None, None, state, tuple(stray))
+    assert result.warning == tuple(stray)  # auto-commit off: a warning (DEC-8)
+
+
+async def test_execute_unborn_head_becomes_a_commit(home: Path):
+    fake = FakeWrite(dest=home, head=None, auto_commit=True)
+    ops, plan = await prepared(fake, home)
+    on_write(fake, "re-add", commit="first")
+    (r,) = (await ops.execute(plan, confirmed=True)).results
+    assert r.commit is not None
+    assert (r.commit.subject, r.pushed) == ("first", False)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"stray": ["new"]}, "the source tree has uncommitted changes"),
+        ({"source": Path("/other")}, "chezmoi's source, destination or working tree changed"),
+        ({"work_tree": Path("/other")}, "chezmoi's source, destination or working tree changed"),
+    ],
+)
+async def test_execute_rechecks_preflight(home: Path, change, reason):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    ops, plan = await prepared(fake, home)
+    for key, value in change.items():
+        setattr(fake, key, value)
+    result = await ops.execute(plan, confirmed=True)
+    (r,) = result.results
+    assert (r.outcome, r.error, r.returncode, r.commit) == ("refused", reason, None, None)
+    assert [w for w in fake.writes if "--dry-run" not in w] == []
+    assert not result.refresh
+    assert not result.ok
+
+
+@pytest.mark.parametrize(
+    ("make_plan", "confirmed", "reason"),
+    [
+        (lambda p: p, False, "not confirmed"),
+        (lambda p: p.with_selection([]), True, "nothing is selected"),
+        (lambda p: replace(p, error="x"), True, "the preview failed"),
+        (
+            lambda p: replace(p, preflight=replace(p.preflight, stray=("s",))),
+            True,
+            "the source tree has uncommitted changes",
+        ),
+    ],
+)
+async def test_execute_refuses_without_running(home: Path, make_plan, confirmed, reason):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    ops, plan = await prepared(fake, home)
+    count = len(fake.log)
+    result = await ops.execute(make_plan(plan), confirmed=confirmed)
+    assert result.refused == reason
+    assert result.results == ()
+    assert len(fake.log) == count
+    assert not result.refresh
+
+
+async def test_execute_rejects_other_flags(home: Path):
+    fake = FakeWrite(dest=home)
+    _, plan = await prepared(fake, home)
+    with pytest.raises(ValueError, match="other chezmoi flags"):
+        await fake.ops(dry_run=True).execute(plan, confirmed=True)
+
+
+async def test_failure_stops_later_groups_and_keeps_earlier_results(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    answer_previews(fake)
+    ops = fake.ops()
+    plan = await ops.prepare_defaults(
+        [
+            row(home / "c", "src", "apply"),
+            row(home / "a", "you", "re-add", columns="MM"),
+            row(home / "x", "both", "merge", columns="MM"),
+        ]
+    )
+    on_write(fake, "apply", commit="Apply")
+    on_write(fake, "re-add", returncode=1, stderr=b"chezmoi: re-add went wrong\n")
+
+    async def never(argv, **kwargs):
+        raise AssertionError("merge must not run")
+
+    result = await ops.execute(plan, confirmed=True, interactive_runner=never)
+    assert [(r.command.action, r.outcome) for r in result.results] == [
+        ("apply", "ok"),
+        ("re-add", "failed"),
+    ]
+    assert result.results[0].commit is not None
+    assert result.results[1].error == "chezmoi: re-add went wrong"
+    assert result.results[1].returncode == 1
+    assert [c.action for c in result.unrun] == ["merge"]
+    assert result.refresh
+    assert not result.ok
+
+
+async def test_failed_command_that_committed_reports_the_commit(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    ops, plan = await prepared(fake, home)
+    on_write(fake, "re-add", returncode=1, stderr=b"push failed\n", commit="Re-add")
+    (r,) = (await ops.execute(plan, confirmed=True)).results
+    assert (r.outcome, r.error, r.state) == ("failed", "push failed", "committed")
+    assert r.commit is not None
+    assert r.commit.subject == "Re-add"
+    assert r.pushed is False
+
+
+async def test_reporting_failure_says_the_command_ran(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    answer_previews(fake)
+    ops = fake.ops()
+    plan = await ops.prepare_defaults(
+        [row(home / "c", "src", "apply"), row(home / "a", "you", "re-add", columns="MM")]
+    )
+    on_write(fake, "apply", commit="Apply")
+    heads = []
+
+    def reply(argv, env):
+        if argv[0] == "git" and argv[3:5] == ("rev-parse", "--verify"):
+            heads.append(argv)
+            if len(heads) == 2:  # the HEAD read after apply
+                return Completed(argv, 128, b"", f"fatal: {SECRET}\n".encode())
+        return None
+
+    fake.reply(reply)
+    result = await ops.execute(plan, confirmed=True)
+    (r,) = result.results
+    assert (r.outcome, r.returncode) == ("ok", 0)
+    assert r.reporting_error is not None
+    assert SECRET not in r.reporting_error
+    assert [c.action for c in result.unrun] == ["re-add"]
+    assert result.refresh
+
+
+@pytest.mark.parametrize(
+    ("tags", "config_kw", "expect_whole"),
+    [((), {}, False), (("enc",), {}, True), ((), {"never_mask": ("~/**",)}, False)],
+)
+async def test_execution_diagnostics_are_masked(home: Path, tags, config_kw, expect_whole):
+    fake = FakeWrite(dest=home)
+    answer_previews(fake)
+    config = Config(Path("/c"))
+    config = replace(config, secrets=replace(config.secrets, **config_kw))
+    ops = fake.ops(config)
+    plan = await ops.prepare("apply", [row(home / "a", tags=tags), row(home / "b")])
+    stderr = f'note\npassword = "x\\"{SECRET}"\nerror: {SECRET} \xff\n'.encode("latin-1")
+    on_write(fake, "apply", returncode=2, stdout=f"api_key: {SECRET}\n".encode(), stderr=stderr)
+    (r,) = (await ops.execute(plan, confirmed=True)).results
+    text = r.stdout + r.stderr + (r.error or "") + repr(r)
+    assert SECRET not in text
+    assert "x\\" not in text
+    if expect_whole:
+        assert (r.stdout, r.stderr, r.error) == (f"{MASK}\n", f"{MASK}\n" * 3, MASK)
+    else:
+        # Line level, never_mask ignored for grouped output (DEC-30).
+        assert r.stdout == f"api_key: {MASK}\n"
+        assert r.stderr == f'note\npassword = "{MASK}"\nerror: {MASK} �\n'
+        assert r.error == f"error: {MASK} �"
+    assert r.returncode == 2
+
+
+async def test_empty_stderr_error(home: Path):
+    fake = FakeWrite(dest=home)
+    ops, plan = await prepared(fake, home)
+    on_write(fake, "re-add", returncode=3)
+    (r,) = (await ops.execute(plan, confirmed=True)).results
+    assert r.error == "chezmoi re-add exited 3"
+
+
+async def test_dry_run_execution(home: Path):
+    fake = FakeWrite(dest=home)
+    ops, plan = await prepared(fake, home, dry_run=True)
+    result = await ops.execute(plan, confirmed=True)
+    (r,) = result.results
+    assert (r.outcome, r.state, r.commit, r.pushed) == ("dry run", "dry run", None, None)
+    assert result.dry_run
+    assert result.ok
+    real = [c for c in fake.log if c[0] == "chezmoi" and subcommand(c)[0] == "re-add"]
+    assert all("--dry-run" in c for c in real)
+
+
+class Gate:
+    """A runner wrapper that holds the real write until released."""
+
+    def __init__(self, fake: FakeWrite, action: str) -> None:
+        self.fake, self.action = fake, action
+        self.entered, self.release = asyncio.Event(), asyncio.Event()
+        self.finished = False
+
+    async def __call__(self, argv, **kwargs) -> Completed:
+        words = subcommand(argv)
+        if words[:1] == (self.action,) and "--dry-run" not in words:
+            self.entered.set()
+            await self.release.wait()
+            self.fake.commit("gated")
+            self.finished = True
+        return await self.fake.chezmoi_runner(argv, **kwargs)
+
+
+async def test_cancelling_the_caller_doesnt_stop_the_write(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    answer_previews(fake)
+    gate = Gate(fake, "re-add")
+    ops = WriteOps(Chezmoi(gate), Config(Path("/c")), git_runner=fake.git_runner)
+    plan = await ops.prepare("re-add", [row(home / "a", "you", "re-add", columns="MM")])
+    caller = asyncio.create_task(ops.execute(plan, confirmed=True))
+    await gate.entered.wait()
+    caller.cancel()
+    gate.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert gate.finished
+    # Result collection ran after the write: HEAD, porcelain, upstream.
+    tail = [c[3] for c in fake.log[-4:]]
+    assert tail == ["rev-parse", "log", "status", "rev-parse"]
+
+
+async def test_prepare_waits_for_a_running_write(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    answer_previews(fake)
+    gate = Gate(fake, "re-add")
+    ops = WriteOps(Chezmoi(gate), Config(Path("/c")), git_runner=fake.git_runner)
+    rows = [row(home / "a", "you", "re-add", columns="MM")]
+    plan = await ops.prepare("re-add", rows)
+    writing = asyncio.create_task(ops.execute(plan, confirmed=True))
+    await gate.entered.wait()
+    count = len(fake.log)
+    preparing = asyncio.create_task(ops.prepare("apply", rows))
+    for _ in range(20):
+        await asyncio.sleep(0)  # yield only: the prepare must be stuck on the lock
+    assert len(fake.log) == count
+    gate.release.set()
+    await writing
+    await preparing
+    # The write's whole collection precedes the prepare's first read.
+    write = next(
+        i
+        for i, c in enumerate(fake.log)
+        if c[0] == "chezmoi" and subcommand(c)[0] == "re-add" and "--dry-run" not in c
+    )
+    after = [c[3] if c[0] == "git" else subcommand(c)[0] for c in fake.log[write + 1 : write + 6]]
+    assert after == ["rev-parse", "log", "status", "rev-parse", "dump-config"]
+
+
+# --- Execution: live ------------------------------------------------------------
+
+
+def head(scratch: Scratch) -> tuple[str, str]:
+    sha, _, subject = scratch.git("log", "-1", "--format=%H%x00%s").stdout.strip().partition("\0")
+    return sha, subject
+
+
+async def run_plan(ops: WriteOps, plan: WritePlan) -> WriteResult:
+    assert not plan.blocked, plan.error
+    result = await ops.execute(plan, confirmed=True)
+    assert result.ok, result
+    return result
+
+
+@requires_chezmoi
+async def test_live_readd_reports_the_commit(scratch: Scratch):
+    setup_three(scratch)
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    result = await run_plan(ops, await ops.prepare("re-add", [rows[".a"]]))
+    (r,) = result.results
+    assert r.commit is not None
+    assert (r.commit.sha, r.commit.subject) == head(scratch)
+    assert (r.pushed, r.state, r.stray) == (False, "committed", ())
+    assert (scratch.source / "dot_a").read_text() == ".a\nhome edit\n"
+    assert result.refresh
+
+
+@requires_chezmoi
+async def test_live_batch_readd_is_one_call_and_one_commit(scratch: Scratch):
+    setup_three(scratch)
+    rows = await live_rows(scratch)
+    before = head(scratch)
+    cz, rec = recording(scratch)
+    ops = live_ops(scratch, cz)
+    plan = await ops.prepare("re-add", [rows[".a"], rows[".c"]])
+    (r,) = (await run_plan(ops, plan)).results
+    real = [c for c in rec.calls if subcommand(c)[0] == "re-add" and "--dry-run" not in c]
+    assert real == [plan.commands[0].argv]
+    assert real[0][-2:] == (str(scratch.home / ".a"), str(scratch.home / ".c"))
+    assert int(scratch.git("rev-list", "--count", f"{before[0]}..HEAD").stdout) == 1
+    assert r.commit is not None
+    assert r.commit.sha == head(scratch)[0]
+
+
+@requires_chezmoi
+async def test_live_push_state_with_a_local_upstream(scratch: Scratch):
+    setup_three(scratch)
+    scratch.git("branch", "upstream")
+    scratch.git("branch", "--set-upstream-to=upstream")
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    (r,) = (await run_plan(ops, await ops.prepare("re-add", [rows[".a"]]))).results
+    assert r.pushed is False
+    assert r.commit is not None
+    scratch.git("branch", "-f", "upstream", r.commit.sha)
+    rows = await live_rows(scratch)
+    (r,) = (await run_plan(ops, await ops.prepare("re-add", [rows[".c"]]))).results
+    assert r.pushed is False  # the upstream holds only the earlier commit
+
+
+@requires_chezmoi
+async def test_live_apply_and_forget(scratch: Scratch):
+    setup_three(scratch)
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    await run_plan(ops, await ops.prepare("apply", [rows[".a"]]))  # you→: overwritten (--force)
+    assert (scratch.home / ".a").read_text() == ".a\n"
+    (r,) = (await run_plan(ops, await ops.prepare("forget", [rows[".c"]]))).results
+    assert (scratch.home / ".c").exists()
+    assert not (scratch.source / "dot_c").exists()
+    assert r.commit is not None
+
+
+@requires_chezmoi
+async def test_live_auto_commit_off_waits_uncommitted(scratch: Scratch):
+    setup_three(scratch)
+    scratch.set_auto_commit(False)
+    (scratch.source / "stray").write_text("x\n")
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    plan = await ops.prepare("re-add", [rows[".a"]])
+    assert plan.preflight.warns
+    result = await run_plan(ops, plan)
+    (r,) = result.results
+    assert (r.commit, r.pushed, r.state) == (None, None, "not committed")
+    assert set(r.stray) == {"dot_a", "stray"}
+    assert result.warning == ("stray",)
+
+
+@requires_chezmoi
+async def test_live_apply_directory_leaves_children(scratch: Scratch):
+    h = scratch.home
+    (h / ".d").mkdir()
+    (h / ".d" / "x").write_text("x\n")
+    scratch.run("add", str(h / ".d"))
+    scratch.commit_all("add .d")
+    (h / ".d").chmod(0o700)
+    (h / ".d" / "x").write_text("child edit\n")
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    await run_plan(ops, await ops.prepare("apply", [rows[".d"]]))
+    assert (h / ".d").stat().st_mode & 0o777 == 0o755
+    assert (h / ".d" / "x").read_text() == "child edit\n"
+
+
+@requires_chezmoi
+async def test_live_forget_directory_and_child(scratch: Scratch):
+    scratch.set_auto_commit(True)
+    h = scratch.home
+    (h / ".d" / "sub").mkdir(parents=True)
+    (h / ".d" / "x").write_text("x\n")
+    (h / ".d" / "sub" / "y").write_text("y\n")
+    scratch.run("add", str(h / ".d"))
+    (h / ".d").chmod(0o700)
+    (h / ".d" / "x").write_text("child edit\n")
+    rows = await live_rows(scratch)
+    cz, rec = recording(scratch)
+    ops = live_ops(scratch, cz)
+    plan = await ops.prepare("forget", [rows[".d/x"], rows[".d"]])
+    assert plan.commands[0].targets == (h / ".d",)
+    (r,) = (await run_plan(ops, plan)).results
+    real = [c for c in rec.calls if subcommand(c)[0] == "forget" and "--dry-run" not in c]
+    assert [c[-3:] for c in real] == [("forget", "--force", str(h / ".d"))]
+    assert not (scratch.source / "dot_d").exists()
+    assert (h / ".d" / "x").read_text() == "child edit\n"
+    assert (h / ".d" / "sub" / "y").exists()
+    assert r.commit is not None
+
+
+@requires_chezmoi
+async def test_live_global_dry_run_changes_nothing(scratch: Scratch):
+    setup_three(scratch)
+    rows = await live_rows(scratch)
+    state = scratch.run("state", "dump", "--format=json").stdout
+    before = snapshot(scratch)
+    ops = live_ops(scratch, scratch.chezmoi(dry_run=True))
+    cases: tuple[tuple[Action, str], ...] = (("re-add", ".a"), ("apply", ".b"), ("forget", ".c"))
+    for action, name in cases:
+        result = await run_plan(ops, await ops.prepare(action, [rows[name]]))
+        (r,) = result.results
+        assert (r.outcome, r.state, r.commit, r.pushed) == ("dry run", "dry run", None, None)
+    assert snapshot(scratch) == before
+    assert scratch.run("state", "dump", "--format=json").stdout == state

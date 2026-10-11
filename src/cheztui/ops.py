@@ -12,17 +12,19 @@ dataclasses that hold only masked text.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import shlex
 import stat
-from collections.abc import Awaitable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, TypeVar
 
 from cheztui.chezmoi import (
     Chezmoi,
+    ChezmoiError,
     ChezmoiFailed,
     DumpEntry,
     EntryState,
@@ -30,7 +32,7 @@ from cheztui.chezmoi import (
     StatusRow,
 )
 from cheztui.config import Config, SecretsConfig
-from cheztui.git import Commit, Git, GitFailed
+from cheztui.git import Commit, Git, GitError, GitFailed
 from cheztui.runner import Runner, run_subprocess
 from cheztui.secrets import Masker, calls_secret_function
 
@@ -631,6 +633,133 @@ class WriteOps:
             entries[i] = replace(e, diff=diff)
         return replace(plan, entries=tuple(entries))
 
+    # --- Execution (spec §5 Preparation and execution, Diagnostics; DEC-27, DEC-30)
+
+    async def execute(
+        self,
+        plan: WritePlan,
+        *,
+        confirmed: bool,
+        interactive_runner: Runner | None = None,
+    ) -> WriteResult:
+        """Run a prepared plan's commands in order, once each.
+
+        A blocked, failed, unconfirmed or empty plan runs nothing; an
+        interactive-only plan needs no confirmation (DEC-4). Each command
+        gets a fresh pre-flight first. The first failure or refusal stops
+        the rest, keeping earlier results; there is no rollback (DEC-27).
+        Cancelling the caller neither kills a started write nor skips its
+        result collection.
+        """
+        if plan.prefix != tuple(self.chezmoi.argv()):
+            raise ValueError("the plan was prepared with other chezmoi flags")
+        dry_run = self.chezmoi.dry_run
+        refusal = _refusal(plan, confirmed=confirmed)
+        if refusal is not None:
+            return WriteResult(unrun=plan.commands, refused=refusal, dry_run=dry_run)
+        if interactive_runner is None and any(c.interactive for c in plan.commands):
+            raise ValueError("an interactive command needs a runner")
+        task = asyncio.ensure_future(self._execute(plan, interactive_runner))
+        return await _uncancellable(task)
+
+    async def _execute(self, plan: WritePlan, interactive_runner: Runner | None) -> WriteResult:
+        async with self._lock:
+            results: list[CommandResult] = []
+            warning: tuple[str, ...] = ()
+            commands = plan.commands
+            for i, command in enumerate(commands):
+                pf = await self._recheck(plan, command)
+                if isinstance(pf, CommandResult):
+                    results.append(pf)
+                    return _result(results, commands[i + 1 :], warning, self.chezmoi.dry_run)
+                if pf.warns:
+                    warning = pf.stray
+                result = await self._run(plan, command, pf, interactive_runner)
+                results.append(result)
+                if result.outcome == "failed" or result.reporting_error is not None:
+                    return _result(results, commands[i + 1 :], warning, self.chezmoi.dry_run)
+            return _result(results, (), warning, self.chezmoi.dry_run)
+
+    async def _recheck(self, plan: WritePlan, command: WriteCommand) -> Preflight | CommandResult:
+        """A fresh pre-flight before a command (DEC-27), or the refusal that stops here."""
+        try:
+            pf = await self.preflight()
+        except (ChezmoiError, GitError) as e:  # already masked
+            return _refused(command, f"pre-flight failed: {e}")
+        if not pf.same_paths(plan.preflight):
+            return _refused(command, "chezmoi's source, destination or working tree changed")
+        if pf.blocked:
+            return _refused(command, "the source tree has uncommitted changes", pf.stray)
+        return pf
+
+    async def _run(
+        self,
+        plan: WritePlan,
+        command: WriteCommand,
+        pf: Preflight,
+        interactive_runner: Runner | None,
+    ) -> CommandResult:
+        """Run one command between two HEAD snapshots (spec §5; DEC-19, DEC-27)."""
+        git = self.git(pf)
+        masker = self.masker(pf)
+        whole = _masks_whole(plan, command)
+
+        def mask(text: str) -> str:
+            return mask_diagnostic(masker, text, whole=whole)
+
+        try:
+            before = await git.head()
+        except GitError as e:
+            return _refused(command, f"pre-flight failed: {mask(str(e))}")
+        args = command.argv[len(plan.prefix) :]
+        try:
+            done = await self.chezmoi.run(*args, check=False)
+        except ChezmoiError as e:
+            result = CommandResult(command, "failed", error=mask(str(e)))
+        else:
+            stderr = _decode(done.stderr)
+            failed = done.returncode != 0
+            result = CommandResult(
+                command,
+                "failed" if failed else "dry run" if self.chezmoi.dry_run else "ok",
+                returncode=done.returncode,
+                stdout=mask(_decode(done.stdout)),
+                stderr=mask(stderr),
+                error=mask(short_error(stderr, command.action, done.returncode))
+                if failed
+                else None,
+            )
+            del done, stderr  # raw output stays transient (DEC-30)
+        return await self._collect(result, git, before, mask)
+
+    async def _collect(
+        self,
+        result: CommandResult,
+        git: Git,
+        before: Commit | None,
+        mask: Callable[[str], str],
+    ) -> CommandResult:
+        """HEAD after the command, push state and stray files, never fetching (DEC-19)."""
+        try:
+            after = await git.head()
+            stray = tuple(await git.porcelain())
+            changed = after is not None and (before is None or after.sha != before.sha)
+            commit = after if changed else None
+            pushed = await git.upstream_contains(commit.sha) if commit is not None else None
+        except GitError as e:
+            # The command ran; only reading its result failed (spec §5).
+            return replace(result, reporting_error=mask(str(e)))
+        state: CommitState = (
+            "committed"
+            if commit is not None
+            else "dry run"
+            if self.chezmoi.dry_run
+            else "not committed"
+            if stray
+            else "no commit"
+        )
+        return replace(result, commit=commit, pushed=pushed, state=state, stray=stray)
+
 
 def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
@@ -727,3 +856,54 @@ def _commands(entries: Iterable[WriteEntry], prefix: tuple[str, ...]) -> tuple[W
             for batch in batches
         ]
     return tuple(commands)
+
+
+def _refusal(plan: WritePlan, *, confirmed: bool) -> str | None:
+    """Why a plan can't start, or None (spec §5, DEC-27)."""
+    if plan.preflight.blocked:
+        return "the source tree has uncommitted changes"
+    if plan.error is not None:
+        return "the preview failed"
+    if not plan.commands:
+        return "nothing is selected"
+    if plan.needs_confirmation and not confirmed:
+        return "not confirmed"
+    return None
+
+
+def _refused(command: WriteCommand, reason: str, stray: tuple[str, ...] = ()) -> CommandResult:
+    """A command that didn't run: nothing it would write has changed."""
+    return CommandResult(command, "refused", error=reason, stray=stray)
+
+
+def _masks_whole(plan: WritePlan, command: WriteCommand) -> bool:
+    """Grouped output is masked whole if any affected target needs it (DEC-30)."""
+    targets = set(command.targets)
+    return any(e.masking for e in plan.entries if e.target in targets or e.implied_by in targets)
+
+
+def _result(
+    results: Sequence[CommandResult],
+    unrun: Sequence[WriteCommand],
+    warning: tuple[str, ...],
+    dry_run: bool,
+) -> WriteResult:
+    return WriteResult(
+        results=tuple(results),
+        unrun=tuple(unrun),
+        warning=warning,
+        dry_run=dry_run,
+        # Any attempted command means views refresh, failure included (spec §5).
+        refresh=any(r.outcome != "refused" for r in results),
+    )
+
+
+async def _uncancellable(task: asyncio.Future[_T]) -> _T:
+    """Await a write; a cancelled caller still waits for it to finish (spec §5, DEC-27)."""
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(task)
+        raise
