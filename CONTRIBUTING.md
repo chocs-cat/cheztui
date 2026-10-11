@@ -27,6 +27,34 @@ each depending only on the ones above it; they arrive with the milestones:
 | `tui/` | the Textual app, its views and widgets |
 
 The CLI and the TUI both go through `ops`, so put behaviour changes there.
+
+Every write goes through `ops.WriteOps` (spec §5 Write flow; DEC-8,
+DEC-27 to DEC-30), one instance per front end:
+
+- `preflight()` reads chezmoi's effective source, destination and working
+  tree from `dump-config`, and the stray files from `git status` in that
+  working tree. With auto-commit on (`git.autoCommit` or `git.autoPush`) a
+  dirty tree blocks; with it off the stray files are a warning. A failed
+  read raises, its output masked; it never counts as a clean tree.
+- `prepare(action, rows)`, `prepare_defaults(rows)` and
+  `prepare_apply_all(rows)` turn Drift rows into a `WritePlan`: eligible
+  and excluded entries, each target's masked dry-run preview, and the exact
+  argv of one command per action group. Previews run only after a
+  pre-flight that doesn't block. `WritePlan.with_selection` re-ticks a plan
+  without running anything.
+- `execute(plan, confirmed=…)` re-runs the pre-flight before each command,
+  runs it once, and reports the commit from `HEAD` before and after, the
+  push state, and masked output, stopping at the first failure. A plan
+  only describes a write; executing it always checks again.
+- Interactive writes (edit, merge) take a front end's runner
+  (`interactive_runner`, plus `interactive_env`); `chezmoi.py` still builds
+  the argv, and `ops` still owns the pre-flight and the result. In dry-run
+  mode they never start.
+
+Plans and results hold masked text only: raw chezmoi output stays inside
+the write path. The CLI commands and TUI views that drive writes aren't
+built yet; tests drive `WriteOps` directly, with `tests/fake_write.py` for
+fakes and the scratch setup for the real binary.
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and
 `--config` (see AGENTS.md, "Live chezmoi: rules"). The tests that run

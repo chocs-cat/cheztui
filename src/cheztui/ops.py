@@ -641,6 +641,7 @@ class WriteOps:
         *,
         confirmed: bool,
         interactive_runner: Runner | None = None,
+        interactive_env: Mapping[str, str] | None = None,
     ) -> WriteResult:
         """Run a prepared plan's commands in order, once each.
 
@@ -650,6 +651,12 @@ class WriteOps:
         the rest, keeping earlier results; there is no rollback (DEC-27).
         Cancelling the caller neither kills a started write nor skips its
         result collection.
+
+        Interactive commands (edit, merge) run through `interactive_runner`,
+        the front end's terminal runner, with `interactive_env` merged over
+        the environment; `chezmoi.py` still builds the argv (spec §10). In
+        dry-run mode they never start: chezmoi's `edit --apply --dry-run`
+        still edits the source (DEC-29).
         """
         if plan.prefix != tuple(self.chezmoi.argv()):
             raise ValueError("the plan was prepared with other chezmoi flags")
@@ -657,12 +664,18 @@ class WriteOps:
         refusal = _refusal(plan, confirmed=confirmed)
         if refusal is not None:
             return WriteResult(unrun=plan.commands, refused=refusal, dry_run=dry_run)
-        if interactive_runner is None and any(c.interactive for c in plan.commands):
+        interactive = any(c.interactive for c in plan.commands)
+        if interactive and interactive_runner is None and not dry_run:
             raise ValueError("an interactive command needs a runner")
-        task = asyncio.ensure_future(self._execute(plan, interactive_runner))
+        task = asyncio.ensure_future(self._execute(plan, interactive_runner, interactive_env))
         return await _uncancellable(task)
 
-    async def _execute(self, plan: WritePlan, interactive_runner: Runner | None) -> WriteResult:
+    async def _execute(
+        self,
+        plan: WritePlan,
+        interactive_runner: Runner | None,
+        interactive_env: Mapping[str, str] | None,
+    ) -> WriteResult:
         async with self._lock:
             results: list[CommandResult] = []
             warning: tuple[str, ...] = ()
@@ -674,7 +687,12 @@ class WriteOps:
                     return _result(results, commands[i + 1 :], warning, self.chezmoi.dry_run)
                 if pf.warns:
                     warning = pf.stray
-                result = await self._run(plan, command, pf, interactive_runner)
+                if command.interactive and self.chezmoi.dry_run:
+                    # The command that would run, after pre-flight; no commit (DEC-29).
+                    results.append(CommandResult(command, "dry run", state="dry run"))
+                    continue
+                runner = interactive_runner if command.interactive else None
+                result = await self._run(plan, command, pf, runner, interactive_env)
                 results.append(result)
                 if result.outcome == "failed" or result.reporting_error is not None:
                     return _result(results, commands[i + 1 :], warning, self.chezmoi.dry_run)
@@ -697,7 +715,8 @@ class WriteOps:
         plan: WritePlan,
         command: WriteCommand,
         pf: Preflight,
-        interactive_runner: Runner | None,
+        runner: Runner | None,
+        env: Mapping[str, str] | None,
     ) -> CommandResult:
         """Run one command between two HEAD snapshots (spec §5; DEC-19, DEC-27)."""
         git = self.git(pf)
@@ -713,7 +732,7 @@ class WriteOps:
             return _refused(command, f"pre-flight failed: {mask(str(e))}")
         args = command.argv[len(plan.prefix) :]
         try:
-            done = await self.chezmoi.run(*args, check=False)
+            done = await self.chezmoi.run(*args, check=False, runner=runner, env=env)
         except ChezmoiError as e:
             result = CommandResult(command, "failed", error=mask(str(e)))
         else:

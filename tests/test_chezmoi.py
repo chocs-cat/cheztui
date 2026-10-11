@@ -149,3 +149,19 @@ async def test_source_text_includes_the_quoted_path():
         ("chezmoi", "--no-tty", "execute-template", '{{ include "/s/a \\"b\\"" }}')
     ]
     assert text == "{{ literal }}\n�"
+
+
+async def test_run_with_an_injected_runner_and_env():
+    default, injected = FakeRunner(), FakeRunner(returncode=1)
+    envs = []
+
+    async def recording(argv, *, cwd=None, env=None, stdin=None):
+        envs.append(env)
+        return await injected(argv)
+
+    cz = Chezmoi(default, source=Path("/s"))
+    done = await cz.run("merge", "/h/a", check=False, runner=recording, env={"EDITOR": "x"})
+    assert done.returncode == 1
+    assert default.calls == []
+    assert injected.calls == [("chezmoi", "--no-tty", "--source", "/s", "merge", "/h/a")]
+    assert envs == [{"EDITOR": "x"}]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -35,7 +36,7 @@ from cheztui.ops import (
     mask_diagnostic,
     short_error,
 )
-from cheztui.runner import Completed
+from cheztui.runner import Completed, run_subprocess
 from cheztui.secrets import MASK, Masker
 from tests.conftest import Scratch, requires_chezmoi
 from tests.fake_write import FakeWrite, H, S, subcommand
@@ -1201,5 +1202,245 @@ async def test_live_global_dry_run_changes_nothing(scratch: Scratch):
         result = await run_plan(ops, await ops.prepare(action, [rows[name]]))
         (r,) = result.results
         assert (r.outcome, r.state, r.commit, r.pushed) == ("dry run", "dry run", None, None)
+    assert snapshot(scratch) == before
+    assert scratch.run("state", "dump", "--format=json").stdout == state
+
+
+# --- Interactive writes ---------------------------------------------------------
+
+
+class Terminal:
+    """A front end's interactive runner: records each call, can move HEAD."""
+
+    def __init__(
+        self, fake: FakeWrite | None = None, *, returncode: int = 0, commit: str = ""
+    ) -> None:
+        self.fake, self.returncode, self.commit = fake, returncode, commit
+        self.calls: list[tuple[tuple[str, ...], Mapping[str, str] | None]] = []
+
+    async def __call__(self, argv, *, cwd=None, env=None, stdin=None) -> Completed:
+        self.calls.append((tuple(argv), env))
+        if self.fake is not None:
+            self.fake.log.append(tuple(argv))
+            if self.commit:
+                self.fake.commit(self.commit)
+        return Completed(tuple(argv), self.returncode, b"", b"")
+
+
+async def refuse_to_run(argv, **kwargs) -> Completed:
+    raise AssertionError(f"the interactive runner ran {argv}")
+
+
+@pytest.mark.parametrize("action", ["edit", "merge"])
+async def test_interactive_runner_gets_the_exact_command(home: Path, action: Action):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    flags: dict[str, Any] = {"config": Path("/c d/c.toml"), "source": S, "destination": home}
+    ops = fake.ops(**flags)
+    plan = await ops.prepare(action, [row(home / "a", "both", "merge", columns="MM")])
+    assert previews(fake) == []
+    assert not plan.needs_confirmation
+    terminal = Terminal(fake, commit="Update dot_a")
+    env = {"EDITOR": "true"}
+    result = await ops.execute(
+        plan, confirmed=False, interactive_runner=terminal, interactive_env=env
+    )
+    expected = (
+        "chezmoi", "--no-tty", "--config", "/c d/c.toml", "--source", str(S),
+        "--destination", str(home), *(("edit", "--apply") if action == "edit" else ("merge",)),
+        str(home / "a"),
+    )  # fmt: skip
+    assert terminal.calls == [(expected, env)]
+    assert fake.writes == [expected[8:]]  # nothing else wrote: the terminal runner only
+    (r,) = result.results
+    assert (r.outcome, r.state) == ("ok", "committed")
+    assert r.commit is not None
+    assert r.commit.subject == "Update dot_a"
+    assert result.refresh
+
+
+async def test_merge_selection_is_one_call(home: Path):
+    fake = FakeWrite(dest=home)
+    ops = fake.ops()
+    plan = await ops.prepare("merge", [row(home / n, "both", "merge", columns="MM") for n in "ba"])
+    terminal = Terminal()
+    await ops.execute(plan, confirmed=False, interactive_runner=terminal)
+    assert [argv[-3:] for argv, _ in terminal.calls] == [
+        ("merge", str(home / "a"), str(home / "b"))
+    ]
+
+
+async def test_interactive_blocked_preflight_never_starts(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True, stray=["stray"])
+    ops = fake.ops()
+    plan = await ops.prepare("edit", [row(home / "a")])
+    result = await ops.execute(plan, confirmed=True, interactive_runner=refuse_to_run)
+    assert result.refused == "the source tree has uncommitted changes"
+    # Dirty only after preparing: the fresh pre-flight refuses.
+    fake.stray = []
+    plan = await ops.prepare("edit", [row(home / "a")])
+    fake.stray = ["stray"]
+    (r,) = (await ops.execute(plan, confirmed=True, interactive_runner=refuse_to_run)).results
+    assert (r.outcome, r.stray) == ("refused", ("stray",))
+
+
+async def test_interactive_needs_a_runner(home: Path):
+    fake = FakeWrite(dest=home)
+    ops = fake.ops()
+    plan = await ops.prepare("merge", [row(home / "a", "both", "merge", columns="MM")])
+    with pytest.raises(ValueError, match="needs a runner"):
+        await ops.execute(plan, confirmed=True)
+    assert fake.writes == []
+
+
+async def test_mixed_defaults_run_merge_last_with_a_fresh_preflight(home: Path):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    answer_previews(fake)
+    ops = fake.ops()
+    plan = await ops.prepare_defaults(
+        [row(home / "c", "src", "apply"), row(home / "x", "both", "merge", columns="MM")]
+    )
+    assert plan.needs_confirmation
+    assert (await ops.execute(plan, confirmed=False, interactive_runner=refuse_to_run)).refused
+    on_write(fake, "apply", commit="Apply")
+    terminal = Terminal(fake, commit="Merge")
+    mark = len(fake.log)
+    result = await ops.execute(plan, confirmed=True, interactive_runner=terminal)
+    assert [(r.command.action, r.outcome) for r in result.results] == [
+        ("apply", "ok"),
+        ("merge", "ok"),
+    ]
+    assert [r.commit.subject for r in result.results if r.commit] == ["Apply", "Merge"]
+    calls = [c[3] if c[0] == "git" else subcommand(c)[0] for c in fake.log[mark:]]
+    # Each command: pre-flight (dump-config, status), HEAD, the command, collection.
+    merge_at = calls.index("merge")
+    assert calls[merge_at - 4 : merge_at] == ["dump-config", "status", "rev-parse", "log"]
+
+
+async def test_mixed_defaults_failure_keeps_merge_unrun(home: Path):
+    fake = FakeWrite(dest=home)
+    answer_previews(fake)
+    ops = fake.ops()
+    plan = await ops.prepare_defaults(
+        [row(home / "c", "src", "apply"), row(home / "x", "both", "merge", columns="MM")]
+    )
+    on_write(fake, "apply", returncode=1, stderr=b"no\n")
+    result = await ops.execute(plan, confirmed=True, interactive_runner=refuse_to_run)
+    assert [r.outcome for r in result.results] == ["failed"]
+    assert [c.action for c in result.unrun] == ["merge"]
+
+
+async def test_failed_interactive_command(home: Path):
+    fake = FakeWrite(dest=home)
+    ops = fake.ops()
+    plan = await ops.prepare("edit", [row(home / "a")])
+    (r,) = (
+        await ops.execute(plan, confirmed=False, interactive_runner=Terminal(returncode=1))
+    ).results
+    assert (r.outcome, r.returncode, r.error) == ("failed", 1, "chezmoi edit exited 1")
+
+
+@pytest.mark.parametrize("action", ["edit", "merge"])
+async def test_interactive_dry_run_never_starts(home: Path, action: Action):
+    fake = FakeWrite(dest=home, auto_commit=True)
+    ops = fake.ops(dry_run=True)
+    plan = await ops.prepare(action, [row(home / "a", "both", "merge", columns="MM")])
+    for runner in (refuse_to_run, None):
+        result = await ops.execute(plan, confirmed=False, interactive_runner=runner)
+        (r,) = result.results
+        assert (r.outcome, r.state, r.commit, r.pushed, r.returncode) == (
+            "dry run", "dry run", None, None, None,
+        )  # fmt: skip
+        assert "--dry-run" in r.command.argv
+        assert result.dry_run
+    assert fake.writes == []
+    assert subcommand(fake.log[-2])[0] == "dump-config"  # pre-flight still runs
+
+
+# --- Interactive writes: live ---------------------------------------------------
+
+HELPER = """\
+import pathlib, sys
+if sys.argv[1] == "edit":
+    path = pathlib.Path(sys.argv[-1])
+    path.write_text(path.read_text() + "edited\\n")
+else:  # merge: destination, source, target
+    pathlib.Path(sys.argv[3]).write_text(pathlib.Path(sys.argv[2]).read_text())
+"""
+
+
+MERGE_ARGS = '"{{ .Destination }}", "{{ .Source }}", "{{ .Target }}"'
+
+
+def interactive_setup(scratch: Scratch) -> None:
+    """A scripted editor and merge tool, never a real one, with autoCommit on."""
+    helper = scratch.root / "helper.py"
+    helper.write_text(HELPER)
+    py = sys.executable
+    scratch.config.write_text(
+        "[git]\n    autoCommit = true\n"
+        f'[edit]\n    command = "{py}"\n    args = ["{helper}", "edit"]\n'
+        f'[merge]\n    command = "{py}"\n'
+        f'    args = ["{helper}", "merge", {MERGE_ARGS}]\n'
+    )
+    h = scratch.home
+    (h / ".e").write_text("e\n")
+    (h / ".m").write_text("m\n")
+    scratch.run("add", str(h / ".e"), str(h / ".m"))
+    with (h / ".m").open("a") as f:
+        f.write("mine\n")
+    with (scratch.source / "dot_m").open("a") as f:
+        f.write("theirs\n")
+    scratch.commit_all("theirs")
+
+
+class Tracking:
+    """The injected runner: counts calls, runs the real binary."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+
+    async def __call__(self, argv, **kwargs) -> Completed:
+        self.calls.append(tuple(argv))
+        return await run_subprocess(argv, **kwargs)
+
+
+@requires_chezmoi
+async def test_live_edit_and_merge_through_the_injected_runner(scratch: Scratch):
+    interactive_setup(scratch)
+    rows = await live_rows(scratch)
+    ops = live_ops(scratch)
+    terminal = Tracking()
+
+    # `.e` is in sync: edit takes any managed file or symlink.
+    edit_row = replace(rows[".m"], target=scratch.home / ".e", source=scratch.source / "dot_e")
+    plan = await ops.prepare("edit", [edit_row])
+    (r,) = (await ops.execute(plan, confirmed=False, interactive_runner=terminal)).results
+    assert (scratch.source / "dot_e").read_text() == "e\nedited\n"
+    assert (scratch.home / ".e").read_text() == "e\nedited\n"  # --apply
+    assert r.commit is not None
+    assert (r.commit.sha, r.commit.subject) == head(scratch)
+
+    plan = await ops.prepare("merge", [rows[".m"]])
+    (r,) = (await ops.execute(plan, confirmed=False, interactive_runner=terminal)).results
+    assert (scratch.source / "dot_m").read_text() == "m\nmine\n"
+    assert r.commit is not None
+    assert r.commit.sha == head(scratch)[0]
+    assert [c[-3:] for c in terminal.calls] == [
+        ("edit", "--apply", str(scratch.home / ".e")),
+        (str(scratch.home), "merge", str(scratch.home / ".m")),
+    ]
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("action", ["edit", "merge"])
+async def test_live_interactive_dry_run_changes_nothing(scratch: Scratch, action: Action):
+    interactive_setup(scratch)
+    rows = await live_rows(scratch)
+    state = scratch.run("state", "dump", "--format=json").stdout
+    before = snapshot(scratch)
+    ops = live_ops(scratch, scratch.chezmoi(dry_run=True))
+    plan = await ops.prepare(action, [rows[".m"]])
+    (r,) = (await ops.execute(plan, confirmed=False, interactive_runner=refuse_to_run)).results
+    assert (r.outcome, r.commit, r.pushed) == ("dry run", None, None)
     assert snapshot(scratch) == before
     assert scratch.run("state", "dump", "--format=json").stdout == state

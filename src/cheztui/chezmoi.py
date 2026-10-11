@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -260,15 +260,31 @@ class Chezmoi:
         argv += args
         return argv
 
-    async def _exec(self, argv: list[str]) -> Completed:
+    async def _exec(
+        self,
+        argv: list[str],
+        runner: Runner | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> Completed:
         try:
-            return await self.runner(argv)
+            return await (runner or self.runner)(argv, env=env)
         except FileNotFoundError as e:
             raise ChezmoiUnavailable(f"{self.binary} not found") from e
 
-    async def run(self, *args: str, check: bool = True) -> Completed:
-        """Run a chezmoi command; with `check`, a non-zero exit raises `ChezmoiFailed`."""
-        done = await self._exec(self.argv(*args))
+    async def run(
+        self,
+        *args: str,
+        check: bool = True,
+        runner: Runner | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> Completed:
+        """Run a chezmoi command; with `check`, a non-zero exit raises `ChezmoiFailed`.
+
+        `runner` replaces the instance's for this one call, as a front end's
+        terminal runner does for an interactive write, and `env` is merged
+        over the process environment (spec §10). The argv is the same.
+        """
+        done = await self._exec(self.argv(*args), runner, env)
         if check and done.returncode != 0:
             raise ChezmoiFailed(
                 done.argv, done.returncode, done.stderr.decode("utf-8", errors="replace")
