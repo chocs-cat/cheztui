@@ -1,0 +1,47 @@
+{
+  ".both file": {
+    "absolute": "/scratch/home/.both file",
+    "sourceAbsolute": "/scratch/source/dot_both file",
+    "sourceRelative": "dot_both file"
+  },
+  ".dir": {
+    "absolute": "/scratch/home/.dir",
+    "sourceAbsolute": "/scratch/source/dot_dir",
+    "sourceRelative": "dot_dir"
+  },
+  ".dir/inner": {
+    "absolute": "/scratch/home/.dir/inner",
+    "sourceAbsolute": "/scratch/source/dot_dir/inner",
+    "sourceRelative": "dot_dir/inner"
+  },
+  ".gone": {
+    "absolute": "/scratch/home/.gone",
+    "sourceAbsolute": "/scratch/source/dot_gone",
+    "sourceRelative": "dot_gone"
+  },
+  ".link": {
+    "absolute": "/scratch/home/.link",
+    "sourceAbsolute": "/scratch/source/symlink_dot_link",
+    "sourceRelative": "symlink_dot_link"
+  },
+  ".mine": {
+    "absolute": "/scratch/home/.mine",
+    "sourceAbsolute": "/scratch/source/dot_mine",
+    "sourceRelative": "dot_mine"
+  },
+  ".tmplfile": {
+    "absolute": "/scratch/home/.tmplfile",
+    "sourceAbsolute": "/scratch/source/dot_tmplfile.tmpl",
+    "sourceRelative": "dot_tmplfile.tmpl"
+  },
+  ".tool": {
+    "absolute": "/scratch/home/.tool",
+    "sourceAbsolute": "/scratch/source/executable_dot_tool",
+    "sourceRelative": "executable_dot_tool"
+  },
+  "hello.sh": {
+    "absolute": "/scratch/home/hello.sh",
+    "sourceAbsolute": "/scratch/source/run_onchange_hello.sh",
+    "sourceRelative": "run_onchange_hello.sh"
+  }
+}

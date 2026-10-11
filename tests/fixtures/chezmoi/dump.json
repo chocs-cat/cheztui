@@ -1,0 +1,54 @@
+{
+  ".both file": {
+    "type": "file",
+    "name": ".both file",
+    "contents": "both\nedited in source\n",
+    "perm": 420
+  },
+  ".dir": {
+    "type": "dir",
+    "name": ".dir",
+    "perm": 493
+  },
+  ".dir/inner": {
+    "type": "file",
+    "name": ".dir/inner",
+    "contents": "inner\n",
+    "perm": 420
+  },
+  ".gone": {
+    "type": "file",
+    "name": ".gone",
+    "contents": "gone\n",
+    "perm": 420
+  },
+  ".link": {
+    "type": "symlink",
+    "name": ".link",
+    "linkname": ".mine"
+  },
+  ".mine": {
+    "type": "file",
+    "name": ".mine",
+    "contents": "mine\n",
+    "perm": 420
+  },
+  ".tmplfile": {
+    "type": "file",
+    "name": ".tmplfile",
+    "contents": "TMPL\n",
+    "perm": 420
+  },
+  ".tool": {
+    "type": "file",
+    "name": ".tool",
+    "contents": "#!/bin/sh\necho tool\necho more\n",
+    "perm": 493
+  },
+  "hello.sh": {
+    "type": "script",
+    "name": "hello.sh",
+    "contents": "#!/bin/sh\necho changed >/dev/null\n",
+    "condition": "onchange"
+  }
+}

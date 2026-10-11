@@ -2,14 +2,19 @@
 
 Every chezmoi call goes through `Chezmoi.run`, which puts `--no-tty` and the
 `--config`, `--source`, `--destination` and `--dry-run` flags in front of the
-command.
+command. The parsers turn chezmoi's output into frozen dataclasses; output
+they can't read raises `ChezmoiUnavailable`.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
+from collections.abc import Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from cheztui.runner import Completed, Runner, run_subprocess
 
@@ -43,6 +48,190 @@ class ChezmoiFailed(ChezmoiError):
         """The last non-empty stderr line, which the log line shows (spec §5 Result)."""
         lines = [line for line in self.stderr.splitlines() if line.strip()]
         return lines[-1].strip() if lines else ""
+
+
+# --- Parsers ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StatusRow:
+    """One `chezmoi status` line: the two columns and the absolute target."""
+
+    first: str
+    second: str
+    target: Path
+
+    @property
+    def columns(self) -> str:
+        return self.first + self.second
+
+
+@dataclass(frozen=True)
+class ManagedEntry:
+    relative: str
+    absolute: Path
+    source_absolute: Path | None
+    source_relative: str | None
+
+
+@dataclass(frozen=True)
+class DumpEntry:
+    """A target-state entry from `chezmoi dump` (spec §6 Drift, DEC-15)."""
+
+    name: str
+    type: str  # chezmoi's own value: file, dir, symlink, script, ...
+    perm: int | None
+    contents: str | None
+    linkname: str | None
+    condition: str | None
+
+
+@dataclass(frozen=True)
+class EntryState:
+    """What chezmoi recorded when it last wrote a target (DEC-14)."""
+
+    type: str
+    mode: int | None
+    contents_sha256: str | None
+
+
+@dataclass(frozen=True)
+class ChezmoiConfig:
+    source_dir: Path
+    working_tree: Path
+    dest_dir: Path
+    auto_commit: bool  # chezmoi commits writes: git.autocommit or git.autopush (DEC-23)
+    auto_push: bool
+
+
+def parse_status(text: str) -> list[StatusRow]:
+    """Parse `chezmoi status --path-style=absolute`.
+
+    Lines split on newlines only, never `splitlines()`, and the path is
+    everything after the two columns and the space, unstripped: a name may
+    hold spaces, carriage returns or other separators.
+    """
+    rows = []
+    for line in text.split("\n"):
+        if not line:
+            continue
+        if len(line) < 4 or line[2] != " ":
+            raise ChezmoiUnavailable(f"can't read a line of chezmoi status: {line!r}")
+        rows.append(StatusRow(line[0], line[1], Path(line[3:])))
+    return rows
+
+
+def _json_object(text: str, command: str) -> dict[str, Any]:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise ChezmoiUnavailable(f"chezmoi {command} printed invalid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ChezmoiUnavailable(f"chezmoi {command} printed JSON that isn't an object")
+    return data
+
+
+class _Fields:
+    """Typed access to one JSON object, raising `ChezmoiUnavailable` naming the command."""
+
+    def __init__(self, data: object, command: str, where: str) -> None:
+        if not isinstance(data, dict):
+            raise ChezmoiUnavailable(f"chezmoi {command}: {where} isn't an object")
+        self.data, self.command, self.where = data, command, where
+
+    def _get(self, key: str, kind: type, required: bool) -> Any:
+        value = self.data.get(key)
+        if value is None:
+            if required:
+                raise ChezmoiUnavailable(f"chezmoi {self.command}: {self.where} has no {key!r}")
+            return None
+        # bool is an int to isinstance, and never a valid int here.
+        if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+            raise ChezmoiUnavailable(
+                f"chezmoi {self.command}: {self.where}: {key!r} isn't a {kind.__name__}"
+            )
+        return value
+
+    def text(self, key: str) -> str:
+        return self._get(key, str, True)
+
+    def opt_text(self, key: str) -> str | None:
+        return self._get(key, str, False)
+
+    def opt_int(self, key: str) -> int | None:
+        return self._get(key, int, False)
+
+    def flag(self, key: str) -> bool:
+        return self._get(key, bool, True)
+
+    def obj(self, key: str) -> _Fields:
+        return _Fields(self._get(key, dict, True), self.command, f"{self.where}.{key}")
+
+
+def parse_managed(text: str) -> dict[str, ManagedEntry]:
+    """Parse `chezmoi managed --format=json --path-style=all`, keyed by relative target."""
+    command = "managed"
+    entries = {}
+    for relative, value in _json_object(text, command).items():
+        f = _Fields(value, command, repr(relative))
+        source_absolute = f.opt_text("sourceAbsolute")
+        entries[relative] = ManagedEntry(
+            relative=relative,
+            absolute=Path(f.text("absolute")),
+            source_absolute=Path(source_absolute) if source_absolute is not None else None,
+            source_relative=f.opt_text("sourceRelative"),
+        )
+    return entries
+
+
+def parse_dump(text: str) -> dict[str, DumpEntry]:
+    """Parse `chezmoi dump --format=json`, keyed by relative target."""
+    command = "dump"
+    entries = {}
+    for relative, value in _json_object(text, command).items():
+        f = _Fields(value, command, repr(relative))
+        entries[relative] = DumpEntry(
+            name=f.text("name"),
+            type=f.text("type"),
+            perm=f.opt_int("perm"),
+            contents=f.opt_text("contents"),
+            linkname=f.opt_text("linkname"),
+            condition=f.opt_text("condition"),
+        )
+    return entries
+
+
+def parse_state_dump(text: str) -> dict[Path, EntryState]:
+    """Parse the `entryState` bucket of `chezmoi state dump --format=json`."""
+    command = "state dump"
+    top = _Fields(_json_object(text, command), command, "the output")
+    entries = {}
+    for target, value in top.obj("entryState").data.items():
+        f = _Fields(value, command, repr(target))
+        entries[Path(target)] = EntryState(
+            type=f.text("type"),
+            mode=f.opt_int("mode"),
+            contents_sha256=f.opt_text("contentsSHA256"),
+        )
+    return entries
+
+
+def parse_dump_config(text: str) -> ChezmoiConfig:
+    """Parse `chezmoi dump-config --format=json`, which spells the git keys in lowercase."""
+    command = "dump-config"
+    f = _Fields(_json_object(text, command), command, "the output")
+    git = f.obj("git")
+    auto_push = git.flag("autopush")
+    return ChezmoiConfig(
+        source_dir=Path(f.text("sourceDir")),
+        working_tree=Path(f.text("workingTree")),
+        dest_dir=Path(f.text("destDir")),
+        auto_commit=git.flag("autocommit") or auto_push,  # DEC-23
+        auto_push=auto_push,
+    )
+
+
+# --- The wrapper -------------------------------------------------------------
 
 
 @dataclass
@@ -106,3 +295,25 @@ class Chezmoi:
                 f"chezmoi {found} is too old: cheztui needs {required} or later"
             )
         return self._version
+
+    async def _text(self, *args: str) -> str:
+        # Paths may not be UTF-8; surrogateescape keeps them round-tripping to Path.
+        return os.fsdecode((await self.run(*args)).stdout)
+
+    async def status(self, targets: Sequence[str | Path] = ()) -> list[StatusRow]:
+        return parse_status(await self._text("status", "--path-style=absolute", *map(str, targets)))
+
+    async def managed(self, include: Sequence[str] = ()) -> dict[str, ManagedEntry]:
+        args = ["managed", "--format=json", "--path-style=all"]
+        if include:
+            args.append(f"--include={','.join(include)}")
+        return parse_managed(await self._text(*args))
+
+    async def dump(self, targets: Sequence[str | Path] = ()) -> dict[str, DumpEntry]:
+        return parse_dump(await self._text("dump", "--format=json", *map(str, targets)))
+
+    async def entry_state(self) -> dict[Path, EntryState]:
+        return parse_state_dump(await self._text("state", "dump", "--format=json"))
+
+    async def dump_config(self) -> ChezmoiConfig:
+        return parse_dump_config(await self._text("dump-config", "--format=json"))

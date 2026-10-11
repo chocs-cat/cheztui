@@ -1,0 +1,7 @@
+{
+  ".tmplfile": {
+    "absolute": "/scratch/home/.tmplfile",
+    "sourceAbsolute": "/scratch/source/dot_tmplfile.tmpl",
+    "sourceRelative": "dot_tmplfile.tmpl"
+  }
+}

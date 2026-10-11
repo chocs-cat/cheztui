@@ -1,0 +1,59 @@
+{
+  "configState": {},
+  "entryState": {
+    "/scratch/home/.both file": {
+      "contentsSHA256": "f6dfac81ebf3cd51f70ae16e43feea60c147e5ef65562403bd86884a39e818bf",
+      "mode": 420,
+      "type": "file"
+    },
+    "/scratch/home/.dir": {
+      "mode": 2147484141,
+      "type": "dir"
+    },
+    "/scratch/home/.dir/inner": {
+      "contentsSHA256": "940a68104d3b690442453f4be394b0a14721a174127d84c1c2f834b7ad05d684",
+      "mode": 420,
+      "type": "file"
+    },
+    "/scratch/home/.gone": {
+      "contentsSHA256": "4b9f2c32577beb1ebc8ab2a1e226faaa9176a81cd4eedbaa22f8a0db919972b5",
+      "mode": 420,
+      "type": "file"
+    },
+    "/scratch/home/.link": {
+      "contentsSHA256": "e734abca056f6e4b4c92dc9e1ddde3eb648f6e6e71c2471bb024c95433fbd0dd",
+      "type": "symlink"
+    },
+    "/scratch/home/.mine": {
+      "contentsSHA256": "fcbc800db3f1867000b852f1ce0044b8f1584f76ade1ed6e65189824f95c3cda",
+      "mode": 420,
+      "type": "file"
+    },
+    "/scratch/home/.tmplfile": {
+      "contentsSHA256": "3f2dfb56f3bd90087904f55b1e7c280fd6639ba90b7a3e5d13a3e1ae39c36b7d",
+      "mode": 420,
+      "type": "file"
+    },
+    "/scratch/home/.tool": {
+      "contentsSHA256": "bf664cf84f00f6ed76164c8457fdeaf8e4dee547226e9ffcf8274e2d2246fed9",
+      "mode": 493,
+      "type": "file"
+    },
+    "/scratch/home/hello.sh": {
+      "contentsSHA256": "4cc6611cb79adb13ce55ec36b93e13e66d511b9a61b6fe60b47210ba1dadcd6f",
+      "type": "script"
+    }
+  },
+  "gitHubKeysState": {},
+  "gitHubLatestReleaseState": {},
+  "gitHubReleasesState": {},
+  "gitHubTagsState": {},
+  "gitHubVersionReleaseState": {},
+  "gitRepoExternalState": {},
+  "scriptState": {
+    "4cc6611cb79adb13ce55ec36b93e13e66d511b9a61b6fe60b47210ba1dadcd6f": {
+      "name": "hello.sh",
+      "runAt": "2026-10-11T02:25:03.348861Z"
+    }
+  }
+}
