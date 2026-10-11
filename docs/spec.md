@@ -241,6 +241,25 @@ would run.
   in its `entryState` (`chezmoi state dump --format=json`), and `both`
   otherwise. A first column that is blank makes the row `src→`; a second
   column `R` makes it `run`. The contents are hashed in memory and dropped.
+  What is compared depends on the target-state entry's `type` (DEC-14):
+  - a file hashes its contents (the dumped `contents` as UTF-8, empty when
+    absent). `dump` turns bytes that aren't UTF-8 into U+FFFD, so when the
+    dumped contents hold U+FFFD the bytes come from `chezmoi cat <target>`
+    instead, one call per such row (#11);
+  - a symlink hashes its `linkname`, which is what chezmoi records;
+  - a directory has no contents and no recorded hash: its `perm` is compared
+    with the recorded `mode`'s permission bits (`mode & 0o777`);
+  - no `entryState` for the target, a recorded `type` that differs from the
+    target state's, or no target-state entry at all makes the row `both`.
+
+  Rows come from `status` alone; a row whose second column is blank isn't
+  drift and is dropped. A row's `source` is the `sourceAbsolute` of its
+  `managed` entry, matched on the absolute target; there is none when the
+  target isn't in `managed` or its `sourceRelative` is empty (as for a
+  `.chezmoiremove` target). With no status rows, nothing else is read. Each
+  refresh otherwise reads `status`, `managed` with each of the three
+  `--include` filters below and without one, `dump` over the status rows'
+  targets, `state dump`, and `chezmoi cat` for any U+FFFD row.
 - **Default fix**, run by `enter`: the first line that matches (DEC-14).
 
   | Row | Default fix |
@@ -249,16 +268,19 @@ would run.
   | `src→` | apply |
   | target deleted (first column `D`) | apply (restores it; `x` forgets it instead) |
   | `you→`, a template | merge (`chezmoi re-add` skips templates) |
-  | `you→`, a directory or symlink | apply, warning that it overwrites your change |
+  | `you→` or `both`, a directory, a symlink, or no target-state entry | apply, warning that it overwrites your change (`chezmoi merge` needs a file on both sides) |
   | `you→` | re-add |
   | `both` | merge |
 
-- Row tags: `tmpl`, `enc`, `exec`, `link`, `ext`, `dir`. `tmpl`, `enc` and
-  `ext` come from `chezmoi managed --include=templates|encrypted|externals`;
-  `dir`, `link` and `exec` from the `type` and `perm` of
-  `chezmoi dump --format=json`. cheztui never decodes source filename
+- Row tags: `tmpl`, `enc`, `exec`, `link`, `ext`, `dir`, always in that
+  order. `tmpl`, `enc` and `ext` come from
+  `chezmoi managed --include=templates|encrypted|externals`; `dir`, `link`
+  and `exec` from the `type` and `perm` of `chezmoi dump --format=json`
+  (`dir` for type `dir`, `link` for `symlink`, `exec` for a `file` whose
+  `perm` has an execute bit). cheztui never decodes source filename
   prefixes (DEC-13, DEC-15).
-- Sort: `both` first, then `you→`, `src→`, `run`; alphabetical within.
+- Sort: `both` first, then `you→`, `src→`, `run`; within each, by absolute
+  target path in code-point order.
 - **Detail:** target and source paths, direction in words, built-in
   syntax-highlighted unified diff (via `chezmoi diff <target>` captured with
   no pager, rendered by cheztui). For templates, a toggle (`t`) between the
@@ -266,7 +288,9 @@ would run.
   The diff and the rendered output are masked (§5, Secrets); `R` reveals.
 - **Keys:** `enter` default fix for the row · `a` apply · `r` re-add (not
   on templates, directories, symlinks or deleted targets: the key bar hides
-  it there) · `m` merge (suspends for chezmoi's merge tool) · `M` merge
+  it there) · `m` merge (suspends for chezmoi's merge tool; hidden on
+  directories, symlinks and rows with no target-state entry, which
+  `chezmoi merge` refuses) · `M` merge
   through the selection, one `chezmoi merge` call · `e` edit source · `d`
   full diff · `x` forget · `A` apply all.
 - **Selection:** with rows selected, `a`, `r`, `x` and `M` act on every
@@ -416,7 +440,13 @@ What a new machine would get.
 `cheztui` with no arguments opens the TUI. Every read command takes
 `--json` (result on stdout, progress on stderr). Exit codes: `0` ok,
 `1` some target failed / refused, `2` usage or config error, `3` chezmoi
-missing or broken.
+missing or broken, or a chezmoi read failed (DEC-25).
+
+Every command loads cheztui's config (§9) first, then checks the chezmoi
+version (DEC-21). A config error (exit 2) or a chezmoi error (exit 3) prints
+`cheztui: <message>` on stderr and nothing on stdout, with or without
+`--json`; for a failed chezmoi command the message ends with chezmoi's last
+error line.
 
 | Command | Purpose |
 |---|---|
@@ -436,7 +466,9 @@ missing or broken.
 
 Global flags: `--dry-run/-n`, `--chezmoi-config PATH`, `--source PATH`,
 `--destination PATH` (DEC-19), and `--profile NAME` from v0.3. Each is
-passed through to every chezmoi call.
+passed through to every chezmoi call, as given. They go before the command
+(`cheztui -n status`), so they never clash with a command's own flags
+(`edit --dry-run`).
 
 `--json` shapes are a contract: before 1.0, fields are only added, never
 renamed (DEC-19).
@@ -444,14 +476,31 @@ renamed (DEC-19).
 - `status --json`: `{"rows": [{"target", "source", "direction",
   "default_fix", "columns", "tags"}]}`. `target` is absolute; `source` is
   the absolute source path, or `null` when the source no longer has the
-  entry; `direction` is `you`, `src`, `both` or `run`; `default_fix` is
-  `apply`, `re-add`, `merge` or `forget`; `columns` is chezmoi's two status
-  characters (`"MM"`, `" R"`); `tags` is a list from `tmpl`, `enc`, `exec`,
-  `link`, `ext`, `dir`. Rows are in the Drift view's sort order. Exit 0
-  whether or not anything drifted.
+  entry (§6 Drift); `direction` is `you`, `src`, `both` or `run`;
+  `default_fix` is `apply`, `re-add` or `merge`; `columns` is chezmoi's two
+  status characters (`"MM"`, `" R"`); `tags` is a list from `tmpl`, `enc`,
+  `exec`, `link`, `ext`, `dir`, in that order. Rows are in the Drift view's
+  sort order. Exit 0 whether or not anything drifted.
 - `verify --json`: `{"verified": bool, "failing": [target, …]}`, where
   `failing` is every status row whose second column is set, scripts
-  included. Exit 0 when verified, 1 when not.
+  included, as absolute targets in the Drift view's sort order. Exit 0 when
+  verified, 1 when not.
+
+Without `--json`, `status` prints one line per row in the same order: the
+direction as the Drift view shows it (`both`, `you→`, `src→`, `run`), the
+two status columns, the target, the default fix and the tags (space
+separated), in columns two spaces apart, padded to the widest value and
+with trailing spaces stripped. A target under `$HOME` shows as `~/…`. With
+no rows it prints `✓ in sync`. `verify` prints `✓ verify`, or `✗ verify`
+followed by one failing target per line, indented two spaces, in the same
+`~` form.
+
+```
+both  MM  ~/.claude/settings.json  merge
+you→  MM  ~/.zshrc                 re-add
+src→   M  ~/.gitconfig             apply   tmpl
+run    R  ~/install-brew.sh        apply
+```
 
 Behaviour lives in `ops.py`; the CLI and the TUI both call it.
 
@@ -560,6 +609,7 @@ when `XDG_CONFIG_HOME` is set and not empty). A missing file means the
 defaults below; cheztui creates the file only when the settings screen
 saves. An unknown key or table is kept and ignored. A config error (CLI
 exit 2; the TUI shows the error and doesn't start) is any of: a file that
+can't be read (a directory at the path, no read permission); a file that
 isn't valid TOML; a known table that isn't a table; a value of the wrong
 type (a boolean is not an integer, nor an integer a boolean); a negative
 `ui.diff_context` or `refresh.debounce_ms`; a `ui.narrow_breakpoint` below

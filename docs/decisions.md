@@ -198,6 +198,21 @@ removes the file from the source repo, and with autoCommit and autoPush that
 is committed and pushed at once; a file deleted by accident should come back
 on `enter`, not vanish from the repo. Forget stays on `x`.
 
+*Amended 2026-10 (#11):* "contents hash" is pinned per entry type. A file
+hashes its contents; `dump` turns bytes that aren't UTF-8 into U+FFFD, so a
+hash of the dumped string could never match a binary file's record, and such
+rows hash the raw bytes from `chezmoi cat <target>` instead. A symlink hashes
+its link target, which is what chezmoi records for it. A directory has no
+contents and no recorded hash, so its permission bits are compared with the
+recorded mode's. A target with no recorded state, a recorded type that
+differs from the target state's, or no target-state entry is `both`: there
+is nothing recorded for it to agree with. The directory-or-symlink line of the
+table now covers `both` rows as well as `you→`, and rows with no
+target-state entry (a `.chezmoiremove` target): `chezmoi merge` refuses
+anything but a regular file ("not a file", observed with chezmoi 2.71) and
+needs a source to merge from, so merge would be a default fix that always
+fails, and apply with the overwrite warning is the one fix that works.
+
 *Where:* `docs/spec.md` §6 (Drift).
 
 ## DEC-15: Row tags come from chezmoi, not from source filenames (2026-10)
@@ -329,3 +344,15 @@ the floor untested; the parsers' recorded fixtures cover one fixed version
 either way.
 
 *Where:* `docs/spec.md` §11; `.github/workflows/ci.yml`.
+
+## DEC-25: A failed chezmoi read exits 3 (2026-10)
+
+When chezmoi itself fails a read cheztui needs (a template error makes
+`chezmoi status` exit non-zero, say), the CLI exits 3, the code for chezmoi
+missing or broken, and prints chezmoi's last error line on stderr. Exit 1
+means a target failed or was refused, and for `verify` that the targets
+differ; folding a failed read into it would let an agent take "couldn't
+look" for "drifted". The read produced no result, so nothing goes on stdout,
+with or without `--json`.
+
+*Where:* `docs/spec.md` §7.
