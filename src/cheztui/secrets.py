@@ -145,9 +145,11 @@ class Masker:
         if content[start] in "\"'":
             quote = content[start]
             start += 1
-            end = content.find(quote, start)
-            if end == -1:
-                end = len(content)
+            end = start
+            while end < len(content) and content[end] != quote:
+                # Double-quoted escapes consume pairs; only odd backslash runs escape a quote.
+                end += 2 if quote == '"' and content[end] == "\\" else 1
+            end = min(end, len(content))
         else:
             end = len(content.rstrip())
             if content[end - 1 : end] == ",":

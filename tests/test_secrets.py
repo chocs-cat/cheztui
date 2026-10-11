@@ -248,6 +248,30 @@ def test_name_patterns(tmp_path: Path, text: str, expected: str, ending: str):
     assert result == Masked(expected + ending, text != expected)
 
 
+QUOTED_VALUE_CASES = [
+    ("json", r'"password": "first\"still-secret",', '"password": "********",'),
+    ("toml", r'password = "first\"still-secret" # keep', 'password = "********" # keep'),
+    ("odd-three", r'password = "first\\\"still-secret"', 'password = "********"'),
+    ("even-two", r'password = "first\\" # keep "later"', 'password = "********" # keep "later"'),
+    ("even-four", r'password = "first\\\\" # keep', 'password = "********" # keep'),
+    ("unterminated", r'password = "first\"still-secret', 'password = "********'),
+    ("multiple-escaped", r'password = "\"first\"still-secret\"', 'password = "********'),
+    ("trailing-backslash", 'password = "first\\', 'password = "********'),
+    ("single-literal", "password = 'first\\' # keep", "password = '********' # keep"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [(text, expected) for _, text, expected in QUOTED_VALUE_CASES],
+    ids=[name for name, _, _ in QUOTED_VALUE_CASES],
+)
+@pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+def test_quoted_value_delimiters(tmp_path: Path, text: str, expected: str, ending: str):
+    result = Masker(SecretsConfig(), tmp_path).mask(text + ending, tmp_path / "config")
+    assert result == Masked(expected + ending, True)
+
+
 def test_custom_name_patterns_replace_defaults(tmp_path: Path):
     masker = Masker(SecretsConfig(mask_patterns=("credential$",)), tmp_path)
     assert masker.mask("credential=v\npassword=v", tmp_path / "config") == Masked(
@@ -313,6 +337,15 @@ def test_template_call_masks_rendered_body(tmp_path: Path):
 # Each case declares the content-line indexes independently of the masker.
 # The invariant test below checks every case, in each masking mode.
 DIFF_CASES = [
+    *(
+        (
+            "quoted-" + name,
+            "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-" + text + "\n+" + text + "\n",
+            "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-" + expected + "\n+" + expected + "\n",
+            {3, 4},
+        )
+        for name, text, expected in QUOTED_VALUE_CASES
+    ),
     (
         "toml",
         "diff --git a/config b/config\nindex 000..111 100644\n--- a/config\n+++ b/config\n"
