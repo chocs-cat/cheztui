@@ -1444,3 +1444,19 @@ async def test_live_interactive_dry_run_changes_nothing(scratch: Scratch, action
     assert (r.outcome, r.commit, r.pushed) == ("dry run", None, None)
     assert snapshot(scratch) == before
     assert scratch.run("state", "dump", "--format=json").stdout == state
+
+
+async def test_forget_directory_keeps_a_selected_child_missing_from_managed(home: Path):
+    fake = FakeWrite(dest=home)
+    answer_previews(fake)
+    fake.reply(
+        lambda argv, env: (
+            Completed(argv, 0, managed_json({"d": "dot_d"}, home), b"")
+            if subcommand(argv)[:1] == ("managed",) and "--include" not in " ".join(argv)
+            else (Completed(argv, 0, b"{}", b"") if subcommand(argv)[:1] == ("managed",) else None)
+        )
+    )
+    d = home / "d"
+    plan = await fake.ops().prepare("forget", [row(d, kind="dir", tags=("dir",)), row(d / "z")])
+    assert [(e.target, e.implied_by) for e in plan.entries] == [(d, None), (d / "z", d)]
+    assert plan.commands[0].targets == (d,)

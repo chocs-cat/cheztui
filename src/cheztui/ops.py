@@ -579,14 +579,15 @@ class WriteOps:
                 )
             )
         listed = {e.target for group in implied.values() for e in group}
-        result: list[WriteEntry] = []
         for e in entries:
             under = parent(e.target)
-            if under is None:
-                result.append(e)
-                result += implied.get(e.target, ())
-            elif e.target not in listed:
+            if under is not None and e.target not in listed:
                 implied[under].append(replace(e, selected=True, excluded=None, implied_by=under))
+        result: list[WriteEntry] = []
+        for e in entries:
+            if parent(e.target) is None:
+                result.append(e)
+                result += sorted(implied.get(e.target, ()), key=lambda i: str(i.target))
         return result
 
     async def _masking(
