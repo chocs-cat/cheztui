@@ -668,8 +668,9 @@ src/cheztui/
   the upstream). The fixture also sets `XDG_DATA_HOME`, `XDG_CACHE_HOME`
   and `XDG_STATE_HOME` to scratch dirs, `GIT_CONFIG_NOSYSTEM=1`, and
   `GIT_CONFIG_GLOBAL` to a scratch gitconfig with a test identity. The
-  chezmoi config lives outside every ancestor of the scratch home: chezmoi
-  refuses to manage files under its own config dir.
+  chezmoi config sits in its own scratch dir, never the scratch home or a
+  dir containing it: chezmoi refuses to add anything under its config
+  file's dir.
 - **Recorded fixtures** (`tests/fixtures/chezmoi/`) come from real chezmoi
   in a scratch setup, with the scratch root replaced by `/scratch` so no
   machine path is committed; a README there names the chezmoi version and
