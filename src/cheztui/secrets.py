@@ -35,6 +35,7 @@ _TOKENS = tuple(
 )
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z0-9 ]*PRIVATE KEY-----")
+_HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
 
 
 @dataclass(frozen=True)
@@ -190,6 +191,35 @@ class Masker:
         output.append(content[cursor:])
         return "".join(output), pem, bool(merged)
 
+    def _mask_diff(self, text: str, *, whole: bool, line_level: bool) -> Masked:
+        output: list[str] = []
+        old = new = 0
+        pem = masked = False
+        for line in text.splitlines(keepends=True):
+            content, ending = _split_ending(line)
+            hunk = _HUNK.match(content)
+            if hunk:
+                old, new = (int(count) if count is not None else 1 for count in hunk.groups())
+            elif old > 0 or new > 0:
+                # Empty lines are empty context, including while a PEM block is open.
+                if not content:
+                    old -= 1
+                    new -= 1
+                elif content[0] in " +-":
+                    prefix, body = content[0], content[1:]
+                    old -= prefix in " -"
+                    new -= prefix in " +"
+                    if body or prefix != " ":
+                        body, pem, changed = self._mask_line(
+                            body, whole=whole, line_level=line_level, pem=pem
+                        )
+                        masked |= changed
+                    content = prefix + body
+            elif content.startswith("diff "):
+                pem = False
+            output.append(content + ending)
+        return Masked("".join(output), masked)
+
     def mask(
         self,
         text: str,
@@ -204,6 +234,8 @@ class Masker:
         line_level = line_level and not any(p.fullmatch(str(target)) for p in self._never)
         if not whole and not line_level:
             return Masked(text, False)
+        if diff:
+            return self._mask_diff(text, whole=whole, line_level=line_level)
         output: list[str] = []
         masked = False
         pem = False

@@ -308,3 +308,152 @@ def test_template_call_masks_rendered_body(tmp_path: Path):
     assert Masker(SecretsConfig(), tmp_path).mask(
         "rendered value\n", tmp_path / "config", secret_template=calls_secret_function(source)
     ) == Masked(MASK + "\n", True)
+
+
+# Each case declares the content-line indexes independently of the masker.
+# The invariant test below checks every case, in each masking mode.
+DIFF_CASES = [
+    (
+        "toml",
+        "diff --git a/config b/config\nindex 000..111 100644\n--- a/config\n+++ b/config\n"
+        '@@ -1,2 +1,2 @@\n-token = "old"\n+token = "new"\n other = "keep"\n',
+        "diff --git a/config b/config\nindex 000..111 100644\n--- a/config\n+++ b/config\n"
+        '@@ -1,2 +1,2 @@\n-token = "********"\n+token = "********"\n other = "keep"\n',
+        {5, 6, 7},
+    ),
+    (
+        "pem",
+        "@@ -1,3 +1,3 @@\n -----BEGIN RSA PRIVATE KEY-----\n-old\n+new\n"
+        " -----END RSA PRIVATE KEY-----\n",
+        "@@ -1,3 +1,3 @@\n -----BEGIN RSA PRIVATE KEY-----\n-********\n+********\n"
+        " -----END RSA PRIVATE KEY-----\n",
+        {1, 2, 3, 4},
+    ),
+    (
+        "pem-across-hunks",
+        "@@ -1,2 +1,2 @@\n -----BEGIN PRIVATE KEY-----\n-old\n+new\n"
+        "@@ -20,3 +20,3 @@\n more\n -----END PRIVATE KEY-----\n after\n",
+        "@@ -1,2 +1,2 @@\n -----BEGIN PRIVATE KEY-----\n-********\n+********\n"
+        "@@ -20,3 +20,3 @@\n ********\n -----END PRIVATE KEY-----\n after\n",
+        {1, 2, 3, 5, 6, 7},
+    ),
+    (
+        "header-like-content",
+        "@@ -1,2 +1 @@\n--- comment\n-- token: v\n+other\n--- a/token=v\n+++ b/token=v\n"
+        "@@ -1 +1 @@\n-secret=v\n+secret=w\n",
+        "@@ -1,2 +1 @@\n--- comment\n-- token: ********\n+other\n"
+        "--- a/token=v\n+++ b/token=v\n@@ -1 +1 @@\n-secret=********\n+secret=********\n",
+        {1, 2, 3, 7, 8},
+    ),
+    (
+        "new-file",
+        "@@ -0,0 +1,3 @@\n+password: v\n+other\n+secret=w\n--- a/token=v\n",
+        "@@ -0,0 +1,3 @@\n+password: ********\n+other\n+secret=********\n--- a/token=v\n",
+        {1, 2, 3},
+    ),
+    (
+        "deleted-file",
+        "@@ -1,2 +0,0 @@\n-token=v\n-other\n+++ b/token=v\n",
+        "@@ -1,2 +0,0 @@\n-token=********\n-other\n+++ b/token=v\n",
+        {1, 2},
+    ),
+    (
+        "omitted-counts-and-no-newline",
+        "@@ -1 +1 @@\n-token=v\n\\ No newline at end of file\n+token=w\n"
+        "\\ No newline at end of file\n--- a/token=v",
+        "@@ -1 +1 @@\n-token=********\n\\ No newline at end of file\n+token=********\n"
+        "\\ No newline at end of file\n--- a/token=v",
+        {1, 3},
+    ),
+    (
+        "empty-context",
+        "@@ -1,3 +1,3 @@\n\n \n-token=v\n+token=w\n--- a/token=v\n",
+        "@@ -1,3 +1,3 @@\n\n \n-token=********\n+token=********\n--- a/token=v\n",
+        {1, 2, 3, 4},
+    ),
+    (
+        "pem-reset-at-next-file",
+        "diff --git a/key b/key\n@@ -1,2 +1,2 @@\n -----BEGIN PRIVATE KEY-----\n-old\n+new\n"
+        "diff --git a/config b/config\nold mode 100644\nnew mode 100755\n"
+        "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-ordinary\n+unchanged\n",
+        "diff --git a/key b/key\n@@ -1,2 +1,2 @@\n"
+        " -----BEGIN PRIVATE KEY-----\n-********\n+********\n"
+        "diff --git a/config b/config\nold mode 100644\nnew mode 100755\n"
+        "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-ordinary\n+unchanged\n",
+        {2, 3, 4, 11, 12},
+    ),
+    (
+        "pem-empty-context",
+        "@@ -1,4 +1,4 @@\n -----BEGIN PRIVATE KEY-----\n\n \n-body\n+new\n",
+        "@@ -1,4 +1,4 @@\n -----BEGIN PRIVATE KEY-----\n\n \n-********\n+********\n",
+        {1, 2, 3, 4, 5},
+    ),
+    (
+        "unchanged",
+        "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-old=value\n+new=value\n",
+        "--- a/config\n+++ b/config\n@@ -1 +1 @@\n-old=value\n+new=value\n",
+        {3, 4},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "expected", "hunk_lines"), DIFF_CASES, ids=[case[0] for case in DIFF_CASES]
+)
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("reason", ["line", "always", "encrypted", "template", "never", "off"])
+def test_diffs(
+    tmp_path: Path,
+    name: str,
+    text: str,
+    expected: str,
+    hunk_lines: set[int],
+    ending: str,
+    reason: str,
+):
+    text = text.replace("\n", ending)
+    expected = expected.replace("\n", ending)
+    config = SecretsConfig(never_mask=("never",))
+    target = tmp_path / ({"always": ".netrc", "never": "never"}.get(reason, "config"))
+    result = Masker(config, tmp_path).mask(
+        text,
+        target,
+        diff=True,
+        encrypted=reason == "encrypted",
+        secret_template=reason == "template",
+        line_level=reason != "off",
+    )
+    before = text.splitlines(keepends=True)
+    after = result.text.splitlines(keepends=True)
+    assert len(before) == len(after)
+    for index, (original, masked) in enumerate(zip(before, after, strict=True)):
+        assert original[:1] == masked[:1]
+        if index not in hunk_lines:
+            assert original == masked
+    if reason in ("always", "encrypted", "template"):
+        for index in hunk_lines:
+            content = before[index].removesuffix(ending)
+            expected_line = content[:1] + (MASK if content[1:] else "")
+            if before[index].endswith(ending):
+                expected_line += ending
+            assert after[index] == expected_line
+        assert result.masked
+    elif reason in ("never", "off"):
+        assert result == Masked(text, False)
+    else:
+        assert result == Masked(expected, text != expected)
+
+
+@pytest.mark.parametrize("token", TOKENS, ids=lambda t: t[:4])
+def test_tokens_in_diff(tmp_path: Path, token: str):
+    text = "@@ -1 +1 @@\n-value=" + token + "\n+value=ordinary\n"
+    result = Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / "config", diff=True)
+    assert result == Masked("@@ -1 +1 @@\n-value=" + MASK + "\n+value=ordinary\n", True)
+
+
+def test_headers_and_zero_count_hunk_unchanged(tmp_path: Path):
+    token = "ghp_" + "A" * 36
+    text = "diff --git a/" + token + " b/config\n@@ -0,0 +0,0 @@\n-token=v\n"
+    assert Masker(SecretsConfig(), tmp_path).mask(text, tmp_path / ".netrc", diff=True) == Masked(
+        text, False
+    )
