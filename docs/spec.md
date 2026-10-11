@@ -352,8 +352,10 @@ Bring files under management, or decide to ignore them.
 - **Detail:** file preview (masked), size, mode.
 - **Keys:** `a` add (flag picker: template, encrypt, exact, follow,
   recursive, create, empty) · `i` ignore (writes a rule to `.chezmoiignore`
-  through `cheztui edit`, with a preview) · `R` add a `.chezmoiremove` entry ·
-  `u` un-ignore (removes the matching rule, with preview).
+  through `cheztui edit`, with a preview) · `X` add a `.chezmoiremove` entry,
+  so chezmoi deletes the file on every machine (as Files' `X` destroys;
+  `R` stays the global reveal, DEC-22) · `u` un-ignore (removes the matching
+  rule, with preview).
 
 ### 7 · Secrets & Encryption
 

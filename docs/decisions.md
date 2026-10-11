@@ -288,3 +288,12 @@ once per run, and exits 3 (CLI) or shows the error (TUI) below it. Raise the
 floor here when a feature needs a newer chezmoi.
 
 *Where:* `docs/spec.md` §2.
+
+## DEC-22: Adopt's `.chezmoiremove` key is `X` (2026-10)
+
+`R` is the global reveal key (§5), and the Adopt detail pane shows a masked
+preview, so Adopt can't also use `R` for "add a `.chezmoiremove` entry". The
+action takes `X`: like destroy in the Files view, it makes chezmoi delete the
+target, and the capital marks it as destructive. `R` reveals in every view.
+
+*Where:* `docs/spec.md` §6 (Adopt).
