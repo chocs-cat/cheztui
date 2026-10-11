@@ -29,7 +29,10 @@ each depending only on the ones above it; they arrive with the milestones:
 The CLI and the TUI both go through `ops`, so put behaviour changes there.
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and
-`--config` (see AGENTS.md, "Live chezmoi: rules").
+`--config` (see AGENTS.md, "Live chezmoi: rules"). The tests that run
+chezmoi need chezmoi 2.60 or later on `PATH` and skip without it; CI runs
+them against 2.60.0, the oldest supported. The parsers' recorded output is in
+`tests/fixtures/chezmoi/`, whose README says how to record it again.
 
 ## Roadmap and decisions
 

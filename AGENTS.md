@@ -88,7 +88,10 @@ can rewrite their home directory and publish the result. So:
   scratch HOME, a scratch source dir (a real git repo) and a scratch chezmoi
   config under `tmp_path`, and passes them to chezmoi with `--source`,
   `--destination` and `--config`. Set `HOME` (and `XDG_CONFIG_HOME`) to the
-  scratch dirs too, so nothing falls back to the real defaults.
+  scratch dirs too, so nothing falls back to the real defaults. The
+  `scratch` fixture in `tests/conftest.py` does all of this: use it (its
+  `chezmoi()` and `run()` pass the three flags, and `requires_chezmoi`
+  skips without the binary) rather than building a setup by hand.
 - Never run a writing chezmoi command (`apply`, `add`, `re-add`, `edit`,
   `forget`, `destroy`, `chattr`, `state delete`, `update`, `git push`)
   without all three flags pointing at scratch paths.
