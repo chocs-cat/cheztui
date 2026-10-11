@@ -12,9 +12,34 @@ merge. Every write shows a preview first, and the result names the commit
 chezmoi made. A `--json` CLI covers the same ground for scripts and coding
 agents, including `cheztui edit` for safe scripted edits to managed files.
 
-**Status:** early scaffold. The app opens a placeholder; the design is in
+**Status:** early. The read commands `cheztui status` and `cheztui verify`
+work; the TUI is still a placeholder. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
+
+## Usage
+
+```sh
+cheztui status            # what drifted, which side changed, and the fix
+cheztui status --json     # the same rows as JSON, for scripts and agents
+cheztui verify            # ✓ verify, or ✗ verify and the failing targets (exit 1)
+cheztui verify --json
+```
+
+```
+both  MM  ~/.claude/settings.json  merge
+you→  MM  ~/.zshrc                 re-add
+src→   M  ~/.gitconfig             apply   tmpl
+run    R  ~/install-brew.sh        apply
+```
+
+`you→` means you edited the target, `src→` that the source changed, `both`
+that both did, and `run` that a script will run on the next apply. Global
+flags go before the command and are passed to every chezmoi call:
+`-n/--dry-run`, `--chezmoi-config PATH`, `--source PATH`,
+`--destination PATH`. Exit codes: `0` ok, `1` not verified, `2` usage or
+config error, `3` chezmoi missing, too old (cheztui needs 2.60 or later) or
+failing.
 
 ## Development
 
