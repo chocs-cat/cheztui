@@ -231,9 +231,22 @@ class Masker:
         encrypted: bool = False,
         secret_template: bool = False,
         line_level: bool = True,
+        whole: bool = False,
+        never_mask: bool = True,
     ) -> Masked:
-        whole = self.masks_whole(target, encrypted=encrypted, secret_template=secret_template)
-        line_level = line_level and not any(p.fullmatch(str(target)) for p in self._never)
+        """Mask one target's body or diff.
+
+        `whole` forces whole masking for text a caller already classified,
+        and `never_mask=False` drops that glob's exemption: write diagnostics
+        that can't be assigned to one target use both (spec §5 Diagnostics,
+        DEC-30).
+        """
+        whole = whole or self.masks_whole(
+            target, encrypted=encrypted, secret_template=secret_template
+        )
+        line_level = line_level and not (
+            never_mask and any(p.fullmatch(str(target)) for p in self._never)
+        )
         if not whole and not line_level:
             return Masked(text, False)
         if diff:

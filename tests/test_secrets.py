@@ -327,6 +327,20 @@ def test_line_level_opt_out(tmp_path: Path, line_level: bool):
     )
 
 
+def test_forced_whole_and_never_mask_override(tmp_path: Path):
+    # Write diagnostics classify grouped output themselves (spec §5 Diagnostics).
+    masker = Masker(SecretsConfig(never_mask=("**",)), tmp_path)
+    target = tmp_path / "keys"
+    text = 'token = "v"\nplain\n'
+    assert masker.mask(text, target) == Masked(text, False)
+    assert masker.mask(text, target, never_mask=False) == Masked(f'token = "{MASK}"\nplain\n', True)
+    assert masker.mask(text, target, whole=True) == Masked(f"{MASK}\n{MASK}\n", True)
+    diff = "@@ -1 +1 @@\n-a\n+b\n"
+    assert (
+        masker.mask(diff, target, diff=True, whole=True).text == f"@@ -1 +1 @@\n-{MASK}\n+{MASK}\n"
+    )
+
+
 def test_template_call_masks_rendered_body(tmp_path: Path):
     source = '{{ onepassword "item" }}'
     assert Masker(SecretsConfig(), tmp_path).mask(
