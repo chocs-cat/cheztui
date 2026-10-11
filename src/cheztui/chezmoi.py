@@ -321,3 +321,29 @@ class Chezmoi:
 
     async def dump_config(self) -> ChezmoiConfig:
         return parse_dump_config(await self._text("dump-config", "--format=json"))
+
+    async def source_text(self, source: Path) -> str:
+        """A source file's literal contents, read through chezmoi (spec §5, DEC-13).
+
+        `include` returns the file unrendered, and `execute-template` renders
+        only the one-action template around it. For password-manager call
+        detection: keep the text transient.
+        """
+        template = "{{ include " + go_quote(source) + " }}"
+        return (await self.run("execute-template", template)).stdout.decode(
+            "utf-8", errors="replace"
+        )
+
+
+def go_quote(path: Path) -> str:
+    """A Go string literal holding `path`'s bytes: printable ASCII as is, else `\\xNN`."""
+    out = []
+    for byte in os.fsencode(path):
+        char = chr(byte)
+        if char in '"\\':
+            out.append("\\" + char)
+        elif 0x20 <= byte < 0x7F:
+            out.append(char)
+        else:
+            out.append(f"\\x{byte:02x}")
+    return '"' + "".join(out) + '"'

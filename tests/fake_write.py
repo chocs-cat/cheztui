@@ -134,10 +134,11 @@ class FakeWrite:
     def chezmoi(self, **flags) -> Chezmoi:
         return Chezmoi(self.chezmoi_runner, **flags)
 
-    def ops(self, config: Config | None = None, **flags) -> WriteOps:
+    def ops(self, settings: Config | None = None, **flags) -> WriteOps:
+        """A `WriteOps` over both fakes; `flags` go to `Chezmoi`, `settings` is cheztui's config."""
         return WriteOps(
             self.chezmoi(**flags),
-            config if config is not None else Config(Path("/c/config.toml")),
+            settings if settings is not None else Config(Path("/c/config.toml")),
             git_runner=self.git_runner,
         )
 

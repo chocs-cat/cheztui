@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import shlex
-from collections.abc import Awaitable, Mapping, Sequence
-from dataclasses import dataclass, field
+import stat
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, TypeVar
 
@@ -30,7 +32,7 @@ from cheztui.chezmoi import (
 from cheztui.config import Config, SecretsConfig
 from cheztui.git import Commit, Git, GitFailed
 from cheztui.runner import Runner, run_subprocess
-from cheztui.secrets import Masker
+from cheztui.secrets import Masker, calls_secret_function
 
 Direction = Literal["you", "src", "both", "run"]
 Fix = Literal["apply", "re-add", "merge"]
@@ -72,6 +74,11 @@ class Drift:
     def failing(self) -> tuple[Path, ...]:
         """Every row's target, in the Drift view's sort order (spec §7)."""
         return tuple(row.target for row in self.rows)
+
+
+def _drift_order(row: DriftRow) -> tuple[int, str]:
+    """The Drift view's sort (spec §6 Drift)."""
+    return (_DIRECTION_ORDER[row.direction], str(row.target))
 
 
 def _sha256(data: bytes) -> str:
@@ -203,7 +210,7 @@ def build_drift(
                 fix_overwrites=overwrites,
             )
         )
-    rows.sort(key=lambda r: (_DIRECTION_ORDER[r.direction], str(r.target)))
+    rows.sort(key=_drift_order)
     return Drift(tuple(rows))
 
 
@@ -328,6 +335,30 @@ class WritePlan:
         """Interactive-only plans open no modal (DEC-4)."""
         return any(not c.interactive for c in self.commands)
 
+    @property
+    def dry_run(self) -> bool:
+        return "--dry-run" in self.prefix
+
+    def with_selection(self, targets: Iterable[Path]) -> WritePlan:
+        """The plan re-ticked to exactly `targets`, previews kept (spec §5, DEC-16).
+
+        Excluded entries stay unticked, and a forgotten directory's
+        descendants follow their directory's tick (DEC-28).
+        """
+        chosen = set(targets)
+        top = {
+            e.target
+            for e in self.entries
+            if e.implied_by is None and e.excluded is None and e.target in chosen
+        }
+        entries = tuple(
+            replace(
+                e, selected=e.implied_by in top if e.implied_by is not None else e.target in top
+            )
+            for e in self.entries
+        )
+        return replace(self, entries=entries, commands=_commands(entries, self.prefix))
+
 
 Outcome = Literal["ok", "failed", "refused", "dry run"]
 CommitState = Literal["committed", "not committed", "no commit", "dry run"]
@@ -442,3 +473,257 @@ class WriteOps:
             auto_commit=config.auto_commit,
             stray=tuple(stray),
         )
+
+    # --- Preparation (spec §5 Drift command plans; DEC-16, DEC-28) ---------
+
+    async def prepare(self, action: Action, rows: Sequence[DriftRow]) -> WritePlan:
+        """One action over the selected rows (or the current row), in Drift order.
+
+        `edit` takes exactly one row; every other action is one command.
+        """
+        rows = _deduplicated(rows)
+        if action == "edit" and len(rows) > 1:
+            raise ValueError("edit takes one target")
+        return await self._prepare([(action, rows)])
+
+    async def prepare_defaults(self, rows: Sequence[DriftRow]) -> WritePlan:
+        """Each row's default fix, grouped apply, re-add, merge (spec §5, DEC-28)."""
+        rows = _deduplicated(rows)
+        fixes: tuple[Fix, ...] = ("apply", "re-add", "merge")
+        groups = [(fix, [r for r in rows if r.default_fix == fix]) for fix in fixes]
+        return await self._prepare([(fix, group) for fix, group in groups if group])
+
+    async def prepare_apply_all(self, rows: Sequence[DriftRow]) -> WritePlan:
+        """Every row, ticking exactly `src→` and `run` (DEC-16; #15 is still open)."""
+        rows = _deduplicated(rows)
+        ticked = {r.target for r in rows if r.direction in ("src", "run")}
+        return await self._prepare([("apply", rows)], ticked=ticked)
+
+    async def _prepare(
+        self,
+        groups: Sequence[tuple[Action, Sequence[DriftRow]]],
+        *,
+        ticked: set[Path] | None = None,
+    ) -> WritePlan:
+        async with self._lock:
+            # A fresh pre-flight before any writing dry run (DEC-8, DEC-27).
+            pf = await self.preflight()
+            tags = {r.target: r.tags for _, rows in groups for r in rows}
+            entries: list[WriteEntry] = []
+            for action, rows in groups:
+                group = [_entry(action, row, ticked) for row in rows]
+                if action == "forget":
+                    group = await self._with_descendants(group, tags)
+                entries += group
+            prefix = tuple(self.chezmoi.argv())
+            plan = WritePlan(
+                pf,
+                tuple(entries),
+                _commands(entries, prefix),
+                apply_all=ticked is not None,
+                prefix=prefix,
+            )
+            if pf.blocked:
+                return plan  # nothing that writes has run, dry runs included
+            masker = self.masker(pf)
+            masked = [await self._masking(e, tags.get(e.target, ()), masker) for e in entries]
+            return await self._previews(replace(plan, entries=tuple(masked)), masker)
+
+    async def _with_descendants(
+        self, entries: list[WriteEntry], tags: dict[Path, tuple[str, ...]]
+    ) -> list[WriteEntry]:
+        """Add every managed descendant of a forgotten directory (spec §5, DEC-28).
+
+        They are previewed but not named in the command; a selected row
+        under a forgotten directory becomes one of them. Tags for added
+        descendants come from chezmoi's metadata (DEC-15), into `tags`.
+        """
+        dirs = sorted(
+            (e.target for e in entries if e.excluded is None and "dir" in tags.get(e.target, ())),
+            key=lambda t: len(t.parts),
+        )
+        if not dirs:
+            return entries
+
+        def parent(target: Path) -> Path | None:
+            return next((d for d in dirs if target != d and target.is_relative_to(d)), None)
+
+        managed, templates, encrypted = await asyncio.gather(
+            sanitized(self.chezmoi.managed(), None, whole=True),
+            sanitized(self.chezmoi.managed(["templates"]), None, whole=True),
+            sanitized(self.chezmoi.managed(["encrypted"]), None, whole=True),
+        )
+        rows = {e.target: e for e in entries}
+        implied: dict[Path, list[WriteEntry]] = {d: [] for d in dirs}
+        for m in sorted(managed.values(), key=lambda m: str(m.absolute)):
+            under = parent(m.absolute)
+            if under is None:
+                continue
+            row = rows.get(m.absolute)
+            tags.setdefault(
+                m.absolute,
+                tuple(
+                    t for t, inc in (("tmpl", templates), ("enc", encrypted)) if m.relative in inc
+                ),
+            )
+            implied[under].append(
+                WriteEntry(
+                    target=m.absolute,
+                    source=m.source_absolute if m.source_relative else None,
+                    action="forget",
+                    selected=True,
+                    implied_by=under,
+                    direction=row.direction if row is not None else None,
+                )
+            )
+        listed = {e.target for group in implied.values() for e in group}
+        result: list[WriteEntry] = []
+        for e in entries:
+            under = parent(e.target)
+            if under is None:
+                result.append(e)
+                result += implied.get(e.target, ())
+            elif e.target not in listed:
+                implied[under].append(replace(e, selected=True, excluded=None, implied_by=under))
+        return result
+
+    async def _masking(
+        self, entry: WriteEntry, tags: tuple[str, ...], masker: Masker
+    ) -> WriteEntry:
+        """The entry's whole-masking reasons (spec §5 Secrets; DEC-10, DEC-17, DEC-26)."""
+        if entry.excluded is not None:
+            return entry
+        reasons = []
+        if "enc" in tags:
+            reasons.append("encrypted")
+        if masker.masks_whole(entry.target):
+            reasons.append("always_mask")
+        if "tmpl" in tags and entry.source is not None:
+            # The literal source, transient: rendering can't map a line to a call.
+            source = await sanitized(self.chezmoi.source_text(entry.source), None, whole=True)
+            if calls_secret_function(source):
+                reasons.append("secret_template")
+        return replace(entry, masking=tuple(reasons))
+
+    async def _previews(self, plan: WritePlan, masker: Masker) -> WritePlan:
+        """Dry-run each target on its own and mask it (spec §5 Drift command plans).
+
+        The first failure blocks the plan with its masked error.
+        """
+        entries = list(plan.entries)
+        for i, e in enumerate(entries):
+            if e.excluded is not None or e.action in INTERACTIVE:
+                continue
+            args = (*ACTION_ARGS[e.action], *PREVIEW_FLAGS, str(e.target))
+            done = await self.chezmoi.run(*args, check=False)
+            whole, never_mask = _preview_rule(e, entries)
+            rule = {"whole": whole, "never_mask": never_mask}
+            if done.returncode != 0:
+                stderr = _decode(done.stderr)
+                error = short_error(stderr, e.action, done.returncode)
+                return replace(
+                    plan,
+                    entries=tuple(entries),
+                    error=masker.mask(error, e.target, **rule).text,
+                    diagnostic=masker.mask(stderr, e.target, **rule).text,
+                )
+            diff = masker.mask(_decode(done.stdout), e.target, diff=True, **rule).text
+            entries[i] = replace(e, diff=diff)
+        return replace(plan, entries=tuple(entries))
+
+
+def _decode(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def _deduplicated(rows: Sequence[DriftRow]) -> list[DriftRow]:
+    """One row per target, in Drift order (spec §5)."""
+    return sorted({r.target: r for r in reversed(rows)}.values(), key=_drift_order)
+
+
+def eligibility(action: Action, row: DriftRow) -> str | None:
+    """Why `action` can't take `row`, or None (spec §5 Drift command plans, §6; DEC-28).
+
+    From chezmoi's metadata and the destination's file type, never from
+    source names (DEC-13, DEC-15).
+    """
+    if action == "apply":
+        return None
+    if row.source is None:
+        return "no source"
+    if "ext" in row.tags:
+        return "an external"
+    if action == "forget":
+        return None
+    if row.kind is None:
+        return "no target-state entry"
+    if row.kind == "script":
+        return "a script"
+    if action == "edit":
+        return None if row.kind in ("file", "symlink") else f"not a file or symlink ({row.kind})"
+    if row.kind == "dir":
+        return "a directory"
+    if row.kind == "symlink":
+        return "a symlink"
+    if row.kind != "file":
+        return f"not a regular file ({row.kind})"
+    if row.columns[0] == "D":
+        return "target deleted"
+    try:
+        mode = os.lstat(row.target).st_mode
+    except FileNotFoundError:
+        return "target deleted"
+    if not stat.S_ISREG(mode):
+        return "target isn't a regular file"
+    if action == "re-add" and "tmpl" in row.tags:
+        return "a template"
+    return None
+
+
+def _entry(action: Action, row: DriftRow, ticked: set[Path] | None) -> WriteEntry:
+    excluded = eligibility(action, row)
+    return WriteEntry(
+        target=row.target,
+        source=row.source,
+        action=action,
+        selected=excluded is None and (ticked is None or row.target in ticked),
+        # Warned whatever the row's default fix (spec §5, DEC-16).
+        overwrites=action == "apply" and row.direction in ("you", "both"),
+        excluded=excluded,
+        direction=row.direction,
+    )
+
+
+def _preview_rule(entry: WriteEntry, entries: Sequence[WriteEntry]) -> tuple[bool, bool]:
+    """(whole, never_mask) for an entry's preview.
+
+    A forgotten directory's diff covers its descendants: whole if any needs
+    it, else line level without `never_mask` (spec §5).
+    """
+    group = [e for e in entries if e.implied_by == entry.target]
+    if not group:
+        return bool(entry.masking), True
+    return any(e.masking for e in (entry, *group)), False
+
+
+def _commands(entries: Iterable[WriteEntry], prefix: tuple[str, ...]) -> tuple[WriteCommand, ...]:
+    """One command per action group, naming only its selected targets (DEC-28)."""
+    groups: dict[Action, list[Path]] = {}
+    for e in entries:
+        targets = groups.setdefault(e.action, [])
+        if e.selected and e.excluded is None and e.implied_by is None:
+            targets.append(e.target)
+    commands = []
+    for action, targets in groups.items():
+        # An empty group never becomes an unscoped chezmoi call.
+        batches = [[t] for t in targets] if action == "edit" else [targets] if targets else []
+        commands += [
+            WriteCommand(
+                action,
+                tuple(batch),
+                (*prefix, *ACTION_ARGS[action], *map(str, batch)),
+                action in INTERACTIVE,
+            )
+            for batch in batches
+        ]
+    return tuple(commands)

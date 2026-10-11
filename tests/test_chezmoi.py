@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -131,3 +132,20 @@ async def test_version_too_old_raises_every_time_but_runs_once():
 async def test_live_version_passes(scratch: Scratch):
     version = await scratch.chezmoi().check_version()
     assert version is None or version >= (2, 60, 0)
+
+
+def test_go_quote():
+    from cheztui.chezmoi import go_quote
+
+    assert go_quote(Path('/s/a "b" \\ c')) == '"/s/a \\"b\\" \\\\ c"'
+    assert go_quote(Path("/s/café\n")) == '"/s/caf\\xc3\\xa9\\x0a"'
+    assert go_quote(Path(os.fsdecode(b"/s/\xff"))) == '"/s/\\xff"'
+
+
+async def test_source_text_includes_the_quoted_path():
+    runner = FakeRunner(stdout=b"{{ literal }}\n\xff")
+    text = await Chezmoi(runner).source_text(Path('/s/a "b"'))
+    assert runner.calls == [
+        ("chezmoi", "--no-tty", "execute-template", '{{ include "/s/a \\"b\\"" }}')
+    ]
+    assert text == "{{ literal }}\n�"
