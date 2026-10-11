@@ -312,6 +312,10 @@ class Chezmoi:
     async def dump(self, targets: Sequence[str | Path] = ()) -> dict[str, DumpEntry]:
         return parse_dump(await self._text("dump", "--format=json", *map(str, targets)))
 
+    async def cat(self, target: str | Path) -> bytes:
+        """The target state's contents as chezmoi would write them, bytes unchanged."""
+        return (await self.run("cat", str(target))).stdout
+
     async def entry_state(self) -> dict[Path, EntryState]:
         return parse_state_dump(await self._text("state", "dump", "--format=json"))
 
