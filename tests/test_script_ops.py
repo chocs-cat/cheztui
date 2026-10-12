@@ -367,3 +367,203 @@ async def test_dirty_edit_preflight_runs_no_writing_command():
     assert result.stray == ("stray",)
     assert fake.writes == []
     assert "execute-template" not in [c[0] for c in fake.chezmoi_calls]
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("kind", ["file", "template", "directory"])
+async def test_add_committed_and_verified(scratch, kind):
+    scratch.set_auto_commit(True)
+    target = scratch.home / "new"
+    if kind == "directory":
+        target.mkdir()
+        (target / "child").write_text("new\n")
+    else:
+        target.write_text("new\n")
+    result = assert_result(await write_ops(scratch).add(target, template=kind == "template"))
+    assert result.verified is True
+    assert result.commit is not None
+    assert result.pushed is False
+    assert result.source is not None
+    assert result.source.exists()
+    assert result.template is (kind == "template")
+    assert result.encrypted is False
+    if kind == "template":
+        entries = await scratch.chezmoi().managed(["templates"], [target])
+        assert any(e.absolute == target for e in entries.values())
+    if kind == "directory":
+        assert (result.source / "child").read_text() == "new\n"
+    assert scratch.git("status", "--porcelain").stdout == ""
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("case", ["managed", "contains", "missing", "outside", "ignored", "dirty"])
+async def test_add_refusals_no_change(scratch, case):
+    managed = setup_file(scratch)
+    target = scratch.home / "new"
+    target.write_text("new\n")
+    if case == "managed":
+        target = managed
+    elif case == "contains":
+        target = scratch.home / "directory"
+        target.mkdir()
+        (target / "child").write_text("old\n")
+        scratch.run("add", "--template", str(target / "child"))
+        scratch.commit_all("managed child")
+    elif case == "missing":
+        target.unlink()
+    elif case == "outside":
+        target = scratch.root / "outside"
+        target.write_text("new\n")
+    elif case == "ignored":
+        (scratch.source / ".chezmoiignore").write_text("new\n")
+        scratch.commit_all("ignore")
+    elif case == "dirty":
+        scratch.set_auto_commit(True)
+        (scratch.source / "stray").write_text("stray")
+    before, head = tree(scratch), scratch.git("rev-parse", "HEAD").stdout
+    result = await write_ops(scratch).add(target, dry_run=case == "ignored")
+    assert isinstance(result, Refusal), result
+    if case == "managed":
+        assert result.message == "~/.foo is already managed; use cheztui edit"
+    elif case == "contains":
+        assert result.message == "~/directory contains managed entries; use cheztui edit on them"
+    elif case == "ignored":
+        assert result.message.startswith("chezmoi would add nothing to the source")
+    elif case == "dirty":
+        assert result.stray == ("stray",)
+    assert tree(scratch) == before
+    assert scratch.git("rev-parse", "HEAD").stdout == head
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("global_dry_run", [False, True])
+async def test_add_dry_run_unchanged(scratch, global_dry_run):
+    setup_file(scratch)
+    scratch.set_auto_commit(True)
+    target = scratch.home / "new"
+    target.write_text("new\n")
+    before, head = tree(scratch), scratch.git("rev-parse", "HEAD").stdout
+    result = assert_result(
+        await write_ops(scratch, global_dry_run=global_dry_run).add(
+            target, dry_run=not global_dry_run
+        )
+    )
+    assert result.source is None
+    assert result.verified is None
+    assert result.commit is None
+    assert result.pushed is None
+    assert tree(scratch) == before
+    assert scratch.git("rev-parse", "HEAD").stdout == head
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("directory", [False, True])
+async def test_add_masks_path_and_descendants(scratch, directory):
+    setup_file(scratch)
+    target = scratch.home / "new"
+    if directory:
+        target.mkdir()
+        (target / "child").write_text("private-body\n")
+        match = "new/child"
+    else:
+        target.write_text("private-body\n")
+        match = "new"
+    config = replace(Config(scratch.root / "c"), secrets=SecretsConfig(always_mask=(match,)))
+    ops = WriteOps(scratch.chezmoi(), config)
+    result = assert_result(await ops.add(target, dry_run=True))
+    assert "private-body" not in result.diff
+    assert "+********" in result.diff
+    revealed = assert_result(await ops.add(target, dry_run=True, reveal=True))
+    assert "private-body" in revealed.diff
+
+
+@requires_chezmoi
+async def test_add_encrypt(scratch):
+    setup_age(scratch)
+    target = scratch.home / "new"
+    target.write_text("private-body\n")
+    ops = write_ops(scratch)
+    result = assert_result(await ops.add(target, encrypt=True, dry_run=True))
+    assert result.encrypted
+    assert "private-body" not in result.diff
+    result = assert_result(await ops.add(target, encrypt=True))
+    assert result.verified
+    assert result.source is not None
+    assert await scratch.chezmoi().decrypt(result.source) == b"private-body\n"
+
+
+@requires_chezmoi
+async def test_add_no_commit_and_edit_command_allowed(scratch):
+    setup_file(scratch)
+    with scratch.config.open("a") as f:
+        f.write('[edit]\ncommand = "should-not-run"\n')
+    target = scratch.home / "new"
+    target.write_text("new\n")
+    result = assert_result(await write_ops(scratch).add(target))
+    assert result.verified
+    assert result.commit is None
+    assert result.state == "not committed"
+
+
+async def test_add_nothing_after_a_successful_command():
+    fake = FakeWrite()
+
+    def reply(argv, env):
+        args = subcommand(argv)
+        if args[0] == "managed":
+            return Completed(argv, 0, b"{}", b"")
+        if args[0] == "add" and "--dry-run" in args:
+            return Completed(argv, 0, b"--- /dev/null\n+++ b/new\n@@ -0,0 +1 @@\n+new\n", b"")
+        return None
+
+    fake.reply(reply)
+    result = await fake.ops().add("/h/new")
+    assert isinstance(result, ScriptResult)
+    assert result.error == "chezmoi added nothing"
+    assert result.verified is False
+    assert len(fake.writes) == 2
+
+
+async def test_inside_destination_managed_failure_propagates():
+    from cheztui.chezmoi import ChezmoiFailed
+
+    fake = FakeWrite()
+    fake.fail("managed", b"password = secret\n")
+    with pytest.raises(ChezmoiFailed) as e:
+        await fake.ops().add("/h/new")
+    assert "secret" not in e.value.stderr
+    assert fake.writes == []
+
+
+async def test_external_edit_refusal():
+    fake = FakeWrite(auto_commit=True, stray=["stray"])
+
+    def reply(argv, env):
+        args = subcommand(argv)
+        if args[0] == "managed":
+            obj = {} if "--include=files" in args else {"a": {"absolute": "/h/a"}}
+            return Completed(argv, 0, json.dumps(obj).encode(), b"")
+        return None
+
+    fake.reply(reply)
+    result = await fake.ops().edit("/h/a", SPEC)
+    assert isinstance(result, Refusal)
+    assert result.message == "/h/a is an external; edit its .chezmoiexternal entry instead"
+    assert fake.writes == []
+
+
+@requires_chezmoi
+async def test_add_walk_does_not_follow_directory_symlinks(scratch):
+    target = scratch.home / "new"
+    target.mkdir()
+    outside = scratch.root / "separate"
+    outside.mkdir()
+    (outside / "child").write_text("other-file\n")
+    (target / "link").symlink_to(outside, target_is_directory=True)
+    (target / "plain").write_text("visible-body\n")
+    config = replace(
+        Config(scratch.root / "c"), secrets=SecretsConfig(always_mask=("new/link/child",))
+    )
+    result = assert_result(await WriteOps(scratch.chezmoi(), config).add(target, dry_run=True))
+    assert "visible-body" in result.diff
+    assert "other-file" not in result.diff

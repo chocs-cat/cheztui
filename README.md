@@ -13,7 +13,8 @@ chezmoi made. A `--json` CLI covers the same ground for scripts and coding
 agents, including `cheztui edit` for safe scripted edits to managed files.
 
 **Status:** early. The read commands `cheztui status` and `cheztui verify`
-work, as does `cheztui edit` for scripted edits; the TUI is still a placeholder. The design is in
+work, as do `cheztui edit` and `cheztui add` for scripted writes; the TUI
+is still a placeholder. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
 
@@ -26,6 +27,8 @@ cheztui verify            # ✓ verify, or ✗ verify and the failing targets (e
 cheztui verify --json
 cheztui edit ~/.zshrc --ops ops.json --dry-run  # preview source-text changes
 cheztui edit ~/.zshrc --ops ops.json --json     # apply, report the commit, verify
+cheztui add ~/.new-config --dry-run            # preview a new file or directory
+cheztui add ~/.new-config --json               # add, report the commit, verify
 ```
 
 ```
@@ -50,6 +53,10 @@ encrypted and `always_mask` diffs are hidden unless `--reveal` is passed.
 With chezmoi auto-commit on, a dirty source tree blocks the edit; with it
 off, stray files produce a warning. See [spec §8](docs/spec.md#8-cheztui-edit-and-the-agent-skill)
 for the ops reference, refusals and JSON contract.
+
+`add` takes one unmanaged file or directory, with `--template` and `--encrypt`
+when needed. It previews the addition and refuses managed paths or directories
+containing managed entries, so adoption cannot overwrite an existing source.
 
 ## Development
 

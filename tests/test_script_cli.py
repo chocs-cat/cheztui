@@ -253,3 +253,64 @@ def test_failure_after_write(scratch, capsys, monkeypatch, as_json, case):
         assert err.endswith(f"cheztui: {expected}\n")
         assert not out.endswith("(not committed)\n")
     assert target.read_bytes() == (b"old\n" if case == "hash" else b"new\n")
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_add_output(scratch, capsys, as_json, dry_run):
+    scratch.set_auto_commit(True)
+    target = scratch.home / "new"
+    target.write_text("new\n")
+    flags = [*(["--json"] if as_json else []), *(["--dry-run"] if dry_run else [])]
+    assert invoke(scratch, "add", target, "--template", *flags) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    if as_json:
+        payload = json.loads(out)
+        assert set(payload) == {
+            "target",
+            "source",
+            "template",
+            "encrypted",
+            "diff",
+            "commit",
+            "pushed",
+            "verified",
+        }
+        assert payload["target"] == str(target)
+        assert payload["template"] is True
+        assert payload["encrypted"] is False
+        assert "+new" in payload["diff"]
+        if dry_run:
+            assert payload["source"] is None
+            assert payload["commit"] is None
+            assert payload["pushed"] is None
+            assert payload["verified"] is None
+        else:
+            assert payload["source"] == str(scratch.source / "new.tmpl")
+            assert payload["commit"] == {
+                "sha": scratch.git("rev-parse", "HEAD").stdout.strip(),
+                "subject": scratch.git("log", "-1", "--format=%s").stdout.strip(),
+            }
+            assert payload["pushed"] is False
+            assert payload["verified"] is True
+    elif dry_run:
+        assert out.endswith("would add ~/new (dry run)\n")
+    else:
+        assert re.search(r'added ~/new → [a-f0-9]{7} "[^"\n]+" \(not pushed\)\n$', out)
+
+
+@requires_chezmoi
+@pytest.mark.parametrize("as_json", [False, True])
+def test_add_refusal(scratch, capsys, as_json):
+    target = setup_file(scratch)
+    assert invoke(scratch, "add", target, *(["--json"] if as_json else [])) == 1
+    out, err = capsys.readouterr()
+    expected = "~/.foo is already managed; use cheztui edit"
+    if as_json:
+        assert json.loads(out) == {"error": expected}
+        assert err == ""
+    else:
+        assert out == ""
+        assert err == f"cheztui: {expected}\n"

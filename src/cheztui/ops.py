@@ -246,7 +246,7 @@ async def drift(chezmoi: Chezmoi) -> Drift:
 
 # --- The write path (spec §5 Write flow; DEC-8, DEC-27 to DEC-30) ------------
 
-Action = Literal["apply", "re-add", "forget", "edit", "merge"]
+Action = Literal["apply", "re-add", "forget", "edit", "merge", "add"]
 
 # The arguments after the global flags and before the targets (spec §5 Drift
 # command plans, DEC-16, DEC-28).
@@ -256,6 +256,7 @@ ACTION_ARGS: dict[Action, tuple[str, ...]] = {
     "forget": ("forget", "--force"),
     "edit": ("edit", "--apply"),
     "merge": ("merge",),
+    "add": ("add",),
 }
 INTERACTIVE: frozenset[Action] = frozenset({"edit", "merge"})  # DEC-4
 PREVIEW_FLAGS = ("--dry-run", "--verbose", "--no-pager", "--color=false", "--use-builtin-diff")
@@ -677,6 +678,103 @@ class WriteOps:
             stderr=done.stderr,
             error=error,
             verified=False if error is not None else None,
+        )
+
+    # --- Add new files (spec §8 New files; DEC-19, DEC-31) ----------------
+
+    async def add(
+        self,
+        target: str | Path,
+        *,
+        template: bool = False,
+        encrypt: bool = False,
+        dry_run: bool = False,
+        reveal: bool = False,
+    ) -> ScriptResult | Refusal:
+        target = normalize_target(target)
+        name = display_target(target)
+        async with self._lock:
+            try:
+                managed = await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
+            except ChezmoiFailed:
+                # managed rejects outside-destination arguments before the add preview.
+                # Only that path rejection proceeds to the dry-run refusal (§8, DEC-32).
+                cfg = await sanitized(self.chezmoi.dump_config(), None, whole=True)
+                if target.is_relative_to(cfg.dest_dir):
+                    raise
+                managed = {}
+            if managed:
+                if any(
+                    e.absolute != target and e.absolute.is_relative_to(target)
+                    for e in managed.values()
+                ):
+                    return Refusal(f"{name} contains managed entries; use cheztui edit on them")
+                return Refusal(f"{name} is already managed; use cheztui edit")
+            pf = await self._script_preflight()
+            if isinstance(pf, Refusal):
+                return pf
+            if pf.blocked:
+                return Refusal("the source tree has uncommitted changes", pf.stray)
+            masker = self.masker(pf)
+            whole = encrypt or masker.masks_whole(target)
+            if target.is_dir() and not target.is_symlink():
+                for root, _, files in os.walk(target, followlinks=False):
+                    for filename in files:
+                        path = Path(root) / filename
+                        if not path.is_symlink() and path.is_file() and masker.masks_whole(path):
+                            whole = True
+            flags = (*(("--template",) if template else ()), *(("--encrypt",) if encrypt else ()))
+            done = await self.chezmoi.run("add", *PREVIEW_FLAGS, *flags, str(target), check=False)
+            if done.returncode or not done.stdout:
+                stderr = _decode(done.stderr)
+                error = (
+                    short_error(stderr, "add", done.returncode)
+                    if done.returncode
+                    else (
+                        "chezmoi would add nothing to the source"
+                        + (f": {short_error(stderr, 'add', 0)}" if stderr.strip() else "")
+                    )
+                )
+                return Refusal(mask_diagnostic(masker, error, whole=whole))
+            diff = _decode(done.stdout)
+            if whole and not reveal:
+                diff = masker.mask(diff, target, diff=True, whole=True).text
+            result = ScriptResult(
+                target,
+                None,
+                template,
+                encrypt,
+                diff=diff,
+                dry_run=dry_run or self.chezmoi.dry_run,
+                warning=pf.stray if pf.warns else (),
+            )
+            if result.dry_run:
+                return result
+            prefix = tuple(self.chezmoi.argv())
+            command = WriteCommand("add", (target,), (*prefix, "add", *flags, str(target)), False)
+            # Directory diagnostics cover every added file, so inherit whole masking (§5).
+            entry = WriteEntry(
+                target,
+                None,
+                "add",
+                True,
+                masking=("encrypted" if encrypt else "always_mask",) if whole else (),
+            )
+            plan = WritePlan(pf, (entry,), (command,), prefix=prefix)
+        outcome = await self.execute(plan, confirmed=True)
+        result_or_refusal = self._script_result(result, outcome)
+        if isinstance(result_or_refusal, Refusal) or result_or_refusal.error is not None:
+            return result_or_refusal
+        managed = await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
+        entry_after = next((e for e in managed.values() if e.absolute == target), None)
+        if entry_after is None:
+            return replace(result_or_refusal, verified=False, error="chezmoi added nothing")
+        verified = await self.chezmoi.verify(target)
+        return replace(
+            result_or_refusal,
+            source=entry_after.source_absolute,
+            verified=verified,
+            error=None if verified else f"{name} doesn't verify after the add",
         )
 
     # --- Preparation (spec §5 Drift command plans; DEC-16, DEC-28) ---------

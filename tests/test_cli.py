@@ -225,4 +225,4 @@ def test_help_lists_only_the_built_commands(capsys):
     commands = [
         line.split()[0] for line in lines if line[:5].isspace() is False and line[:4] == "    "
     ]
-    assert commands == ["status", "verify", "edit"]
+    assert commands == ["status", "verify", "edit", "add"]

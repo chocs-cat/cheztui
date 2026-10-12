@@ -4,6 +4,7 @@
     cheztui status [--json]     drift rows with direction and default fix
     cheztui verify [--json]     pass/fail and the failing targets
     cheztui edit TARGET --ops FILE|- [--dry-run] [--allow-drift] [--reveal] [--json]
+    cheztui add PATH [--template] [--encrypt] [--dry-run] [--reveal] [--json]
 
 Global flags go before the command: -n/--dry-run, --chezmoi-config PATH,
 --source PATH, --destination PATH (DEC-19).
@@ -55,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
     edit.add_argument("--allow-drift", action="store_true")
     edit.add_argument("--reveal", action="store_true")
     edit.add_argument("--json", action="store_true", help="print JSON on stdout")
+    add = commands.add_parser("add", help="bring a new file or directory under management")
+    add.add_argument("target", type=Path, metavar="path")
+    add.add_argument("--template", action="store_true")
+    add.add_argument("--encrypt", action="store_true")
+    add.add_argument("--dry-run", dest="command_dry_run", action="store_true")
+    add.add_argument("--reveal", action="store_true")
+    add.add_argument("--json", action="store_true", help="print JSON on stdout")
     return p
 
 
@@ -224,11 +232,15 @@ def _script_output(result: ops.ScriptResult | ops.Refusal, as_json: bool, action
 
 async def _write(args: argparse.Namespace) -> int:
     # Read and parse the spec before config, version checks or any chezmoi call (§8).
-    try:
-        raw = sys.stdin.read() if args.ops == "-" else Path(args.ops).read_bytes().decode("utf-8")
-        spec = parse_spec(raw)
-    except (OSError, UnicodeError, SpecError) as e:
-        return _refusal(ops.Refusal(str(e)), args.json)
+    spec = None
+    if args.command == "edit":
+        try:
+            raw = (
+                sys.stdin.read() if args.ops == "-" else Path(args.ops).read_bytes().decode("utf-8")
+            )
+            spec = parse_spec(raw)
+        except (OSError, UnicodeError, SpecError) as e:
+            return _refusal(ops.Refusal(str(e)), args.json)
     try:
         settings = config.load()
     except config.ConfigError as e:
@@ -242,13 +254,24 @@ async def _write(args: argparse.Namespace) -> int:
     )
     try:
         await chezmoi.check_version()
-        result = await ops.WriteOps(chezmoi, settings).edit(
-            args.target,
-            spec,
-            dry_run=args.command_dry_run,
-            allow_drift=args.allow_drift,
-            reveal=args.reveal,
-        )
+        writes = ops.WriteOps(chezmoi, settings)
+        if args.command == "edit":
+            assert spec is not None
+            result = await writes.edit(
+                args.target,
+                spec,
+                dry_run=args.command_dry_run,
+                allow_drift=args.allow_drift,
+                reveal=args.reveal,
+            )
+        else:
+            result = await writes.add(
+                args.target,
+                template=args.template,
+                encrypt=args.encrypt,
+                dry_run=args.command_dry_run,
+                reveal=args.reveal,
+            )
     except ChezmoiFailed as e:
         _error(f"chezmoi exited {e.returncode}" + (f": {e.last_line}" if e.last_line else ""))
         return EXIT_CHEZMOI
@@ -266,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         return editor_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "edit":
+    if args.command in ("edit", "add"):
         return asyncio.run(_write(args))
     if args.command is not None:
         return asyncio.run(_read(args))

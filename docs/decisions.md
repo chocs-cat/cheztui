@@ -478,3 +478,17 @@ The edit and add procedures (DEC-11, DEC-18, DEC-19) left these open:
   cheztui reports that as a refusal (dry run) or an error (real run).
 
 *Where:* `docs/spec.md` §8 (Command, Ops spec, New files).
+
+## DEC-32: Add reports an outside-destination path as a refusal (2026-10)
+
+Added 2026-10-12 in #26. Spec §8 requires an outside-destination add path
+to be refused by the add dry run, but chezmoi 2.71 rejects that argument
+in the earlier `managed` call. For this input rejection only, read
+`dump-config` to check the effective destination: if the target is outside
+it, continue with the usual pre-flight and add dry run. The dry run's
+masked last error line is then the exit-1 refusal §8 promises. A managed
+read failure for a target inside the destination still propagates as exit
+3 (DEC-25), as does a failed config read. This keeps the planned refusal
+order for valid targets without treating a failed state read as empty.
+
+*Where:* `docs/spec.md` §8 (New files).

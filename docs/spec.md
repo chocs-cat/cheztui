@@ -860,7 +860,15 @@ directory added recursively), normalized as `edit`'s target, and refuses
 one chezmoi already manages, pointing at `cheztui edit` (DEC-19): the path
 is refused when `chezmoi managed --format=json --path-style=all <path>`
 lists anything, which for a directory includes a managed entry under it,
-since `chezmoi add` would overwrite that entry's source (DEC-31).
+since `chezmoi add` would overwrite that entry's source (DEC-31). A
+directory with managed descendants uses the "contains managed entries"
+refusal even when chezmoi also lists the directory itself.
+
+`managed` can reject a path outside the destination before the dry run.
+For this path rejection only, read the effective destination from
+`dump-config`; when the path is outside it, continue to the pre-flight and
+add dry run so that the invalid path is a refusal. A failed managed read
+for a path inside the destination still exits 3 (§7, DEC-25, DEC-32).
 
 After the pre-flight (§5) it runs the dry run, `chezmoi add --dry-run
 --verbose --no-pager --color=false --use-builtin-diff [--template]
