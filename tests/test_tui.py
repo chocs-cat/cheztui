@@ -273,10 +273,11 @@ async def test_g_rereads_both(tmp_path):
     app = make_app(fake, tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert (calls(fake, "status"), calls(fake, "dump-config")) == (1, 1)
+        # dump-config: the header's read, and the detail's destination (spec §6).
+        assert (calls(fake, "status"), calls(fake, "dump-config")) == (1, 2)
         await pilot.press("g")
         await settled(pilot)
-        assert (calls(fake, "status"), calls(fake, "dump-config")) == (2, 2)
+        assert (calls(fake, "status"), calls(fake, "dump-config")) == (2, 4)
         # The version check passed once and isn't repeated (DEC-21).
         assert fake.chezmoi_calls.count(()) == 1
 
@@ -396,21 +397,6 @@ async def test_q_quits(tmp_path):
 
 
 # --- Panes and layout ----------------------------------------------------------------
-
-
-async def test_detail_shows_target_and_source(tmp_path):
-    app = make_app(FakeChezmoi.drifted(), tmp_path)
-    async with app.run_test() as pilot:
-        await settled(pilot)
-        assert text(app, "#detail-body") == "~/.both file\n/scratch/source/dot_both file"
-
-
-async def test_detail_without_a_source(tmp_path):
-    fake = FakeChezmoi.drifted(status=" M /scratch/home/.unknown\n")
-    app = make_app(fake, tmp_path)
-    async with app.run_test() as pilot:
-        await settled(pilot)
-        assert text(app, "#detail-body") == "~/.unknown\n(no source)"
 
 
 def panes(app: CheztuiApp) -> tuple[str, bool]:

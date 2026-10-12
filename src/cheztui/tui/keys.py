@@ -59,6 +59,8 @@ GLOBAL: tuple[Key, ...] = (
     Key("g", "Refresh", (("g", "refresh"),), palette=True),
     Key(":", "Command palette", (("colon", "command_palette"),)),
     Key("l", "Session log", (("l", "session_log"),), palette=True),
+    # Never on the key bar (spec §6 Drift, Reveal).
+    Key("R", "Reveal masked values in the detail pane", (("R", "reveal"),), palette=True),
     Key(",", "Settings", (("comma", "settings"),), palette=True),
     Key("?", "Help", (("question_mark", "help"),), label="Help", bar=3, palette=True),
     Key("q", "Quit", (("q", "quit"),), palette=True),

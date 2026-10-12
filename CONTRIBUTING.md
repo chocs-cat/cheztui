@@ -32,8 +32,9 @@ In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar) and
 its reads; `keys.py` declares every key once, and the Textual bindings, the
 key bar, help and the palette are all generated from it; `views/base.py` is
 the list and detail panes with the filter and the selection, which each view
-in `views/` fills (`drift.py` so far); `screens.py` holds help, the palette
-and the session log, and `settings.py` the settings screen.
+in `views/` fills (`drift.py` so far); `widgets/diff.py` colours a unified
+diff by line kind; `screens.py` holds help, the palette and the session
+log, and `settings.py` the settings screen.
 
 Every write goes through `ops.WriteOps` (spec §5 Write flow; DEC-8,
 DEC-27 to DEC-30), one instance per front end:
@@ -77,7 +78,9 @@ in `tests/__snapshots__/`. After a deliberate change to what a screen
 shows, rewrite them with `uv run pytest --snapshot-update` and review the
 changed SVGs in the pull request like code: open them in a browser, or
 `rsvg-convert -w 1400 x.svg -o x.png`. A failed run writes
-`snapshot_report.html` with the differences.
+`snapshot_report.html` with the differences. Snapshots run the app with
+`App.run()`, where Textual starts tasks eagerly: a worker on the fake can
+finish before `run_worker` returns, which `run_test()` never shows.
 
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and

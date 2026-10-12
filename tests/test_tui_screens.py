@@ -43,6 +43,7 @@ GLOBAL_ORDER = [
     "g",
     ":",
     "l",
+    "R",
     ",",
     "?",
     "q",
@@ -56,9 +57,10 @@ async def test_help_lists_the_global_keys_in_the_tables_order(tmp_path):
         await pilot.press("question_mark")
         assert isinstance(app.screen, HelpScreen)
         lines = screen_text(app).splitlines()
-        # The D6 Drift view has no keys of its own, so no section of its own.
-        assert lines[0] == "Global"
-        shown = [line.split("  ")[0].strip() for line in lines[1:]]
+        # The view's section first, then a blank line, then the global keys.
+        assert lines[:4] == ["Drift", "t  Toggle the diff and the rendered output", "", "Global"]
+        lines = lines[4:]
+        shown = [line.split("  ")[0].strip() for line in lines]
         assert shown[: len(GLOBAL_ORDER)] == GLOBAL_ORDER
         # Every declared binding is there, with its description.
         for key in keys.GLOBAL:
@@ -66,7 +68,6 @@ async def test_help_lists_the_global_keys_in_the_tables_order(tmp_path):
                 line.startswith(key.keys) and line.endswith(f"  {key.description}")
                 for line in lines
             )
-        assert "R" not in shown  # not bound until reveal lands
 
 
 @pytest.mark.parametrize("close", ["escape", "question_mark", "q"])
