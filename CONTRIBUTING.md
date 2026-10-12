@@ -140,15 +140,14 @@ add a `Release-As: 1.0.0` footer to a commit.
   `release.yml`, environment `pypi`.
 - **GitHub environment:** create an environment named `pypi` in the repo
   settings. Optionally require approval there.
-- **Actions permissions:** in Settings → Actions → General, allow GitHub
-  Actions to create pull requests.
 - **Homebrew tap:** the `TAP_TOKEN` organization secret, a fine-grained
   personal access token for `chocs-cat/homebrew-tap` only, with **Contents**
   read/write, shared with the other repos whose releases write to the tap.
   If the secret is limited to selected repositories, add this one.
-- **CI on release PRs:** a PR opened with the built-in `GITHUB_TOKEN` waits
-  for a maintainer to approve its CI run ("action required"). The release
-  workflow uses the `RELEASE_PLEASE_TOKEN` secret instead when it exists: a
+- **Release PRs:** release-please needs the `RELEASE_PLEASE_TOKEN` secret to
+  open them. The built-in `GITHUB_TOKEN` can't when the organization forbids
+  Actions from creating pull requests, and a PR it opens waits for a
+  maintainer to approve its CI run ("action required"). The secret is a
   fine-grained personal access token for this repo only, with **Contents**
   and **Pull requests** read/write. Release PRs are then opened under your
   name and CI runs on them by itself. Renew the token before it expires; if
