@@ -1,5 +1,6 @@
 MM /scratch/home/.both file
 DA /scratch/home/.gone
 MM /scratch/home/.mine
+ M /scratch/home/.tmplfile
  M /scratch/home/.tool
  R /scratch/home/hello.sh

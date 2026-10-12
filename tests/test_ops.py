@@ -54,6 +54,7 @@ def test_fixture_rows_in_sort_order():
         (".both file", "MM", "both", "merge", ()),
         (".gone", "DA", "you", "apply", ()),
         (".mine", "MM", "you", "re-add", ()),
+        (".tmplfile", " M", "src", "apply", ("tmpl",)),
         (".tool", " M", "src", "apply", ("exec",)),
         ("hello.sh", " R", "run", "apply", ()),
     ]
@@ -73,7 +74,7 @@ def test_fixture_verify():
     d = fixture_drift()
     assert d.verified is False
     assert d.failing == tuple(
-        HOME / n for n in (".both file", ".gone", ".mine", ".tool", "hello.sh")
+        HOME / n for n in (".both file", ".gone", ".mine", ".tmplfile", ".tool", "hello.sh")
     )
 
 
@@ -337,6 +338,7 @@ async def test_live_drift(scratch: Scratch):
         (".both file", "MM", "both", "merge", ()),
         (".gone", "DA", "you", "apply", ()),
         (".mine", "MM", "you", "re-add", ()),
+        (".tmplfile", " M", "src", "apply", ("tmpl",)),
         (".tool", " M", "src", "apply", ("exec",)),
         ("hello.sh", " R", "run", "apply", ()),
     ]

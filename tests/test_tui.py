@@ -121,7 +121,7 @@ async def test_before_the_first_read_finishes(tmp_path):
         release.set()
         await settled(pilot)
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
 
 
 # --- Tabs (DEC-20) ---------------------------------------------------------------
@@ -131,7 +131,7 @@ async def test_the_one_tab_counts_drift_rows(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert text(app, "#tabs").strip() == "1 Drift 5"
+        assert text(app, "#tabs").strip() == "1 Drift 6"
 
 
 async def test_the_tab_has_no_count_in_sync(tmp_path):
@@ -182,7 +182,7 @@ async def test_a_failed_git_read_blanks_the_header(tmp_path, command):
     async with app.run_test() as pilot:
         await settled(pilot)
         assert header(app) == ("cheztui", "✗ verify")
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
         assert text(app, "#log-line") == "✗ git exited 128: fatal: not a git repository"
 
 
@@ -355,7 +355,7 @@ async def test_g_during_a_read_cancels_it(tmp_path):
         await settled(pilot)
         assert calls(fake, "status") == 2
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
         assert app.session_log == []  # a superseded read isn't a cancellation
 
 
@@ -370,7 +370,7 @@ async def test_g_after_a_failed_version_check_retries_it(tmp_path):
         await settled(pilot)
         assert fake.chezmoi_calls.count(()) == 2
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
 
 
 async def test_a_successful_read_clears_an_earlier_error(tmp_path):
@@ -384,7 +384,7 @@ async def test_a_successful_read_clears_an_earlier_error(tmp_path):
         await pilot.press("g")
         await settled(pilot)
         assert text(app, "#log-line") == ""
-        assert text(app, "#tabs").strip() == "1 Drift 5"
+        assert text(app, "#tabs").strip() == "1 Drift 6"
 
 
 async def test_q_quits(tmp_path):

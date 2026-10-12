@@ -143,6 +143,7 @@ def test_status_json(scratch: Scratch, capsys):
             row(".both file", "dot_both file", "both", "merge", "MM"),
             row(".gone", "dot_gone", "you", "apply", "DA"),
             row(".mine", "dot_mine", "you", "re-add", "MM"),
+            row(".tmplfile", "dot_tmplfile.tmpl", "src", "apply", " M", ["tmpl"]),
             row(".tool", "executable_dot_tool", "src", "apply", " M", ["exec"]),
             row("hello.sh", "run_onchange_hello.sh", "run", "apply", " R"),
         ]
@@ -172,6 +173,7 @@ def test_status_human(scratch: Scratch, capsys):
         "both  MM  ~/.both file  merge\n"
         "you→  DA  ~/.gone       apply\n"
         "you→  MM  ~/.mine       re-add\n"
+        "src→   M  ~/.tmplfile   apply   tmpl\n"
         "src→   M  ~/.tool       apply   exec\n"
         "run    R  ~/hello.sh    apply\n"
     )
@@ -185,11 +187,15 @@ def test_verify_json_and_human_on_drift(scratch: Scratch, capsys):
     assert code == 1
     assert json.loads(out) == {
         "verified": False,
-        "failing": [str(h / n) for n in (".both file", ".gone", ".mine", ".tool", "hello.sh")],
+        "failing": [
+            str(h / n) for n in (".both file", ".gone", ".mine", ".tmplfile", ".tool", "hello.sh")
+        ],
     }
     code, out, _ = run(scratch, capsys, "verify")
     assert code == 1
-    assert out == ("✗ verify\n  ~/.both file\n  ~/.gone\n  ~/.mine\n  ~/.tool\n  ~/hello.sh\n")
+    assert out == (
+        "✗ verify\n  ~/.both file\n  ~/.gone\n  ~/.mine\n  ~/.tmplfile\n  ~/.tool\n  ~/hello.sh\n"
+    )
 
 
 @requires_chezmoi
