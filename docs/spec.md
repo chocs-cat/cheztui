@@ -115,6 +115,40 @@ re-added ~/.zshrc → a1b2c3d "Update dot_zshrc" (pushed)
 Narrow terminals (narrower than `ui.narrow_breakpoint`, default 100 cols)
 stack detail under the list; `tab` toggles focus.
 
+**Frame details** (DEC-33):
+
+- **Header fields.** Left: `cheztui • <source>`, the effective source dir
+  from `dump-config`, shown as `~/…` when it is under `$HOME` (as §7 shows
+  targets). Right, three spaces apart: the verify badge; the branch,
+  `<branch> ↑A ↓B` with an upstream, `<branch>` alone with none or before
+  the first commit, `detached` when `HEAD` is detached; the cleanliness,
+  `clean` or `N uncommitted` (the porcelain entries in the working tree);
+  and `DRY RUN` under `-n`, in the warning colour. `ops.repo_state()`
+  reads them: `dump-config`, then git's branch, ahead/behind and porcelain
+  in its `workingTree`. A field is blank until its read succeeds, and
+  blank again after its read fails.
+- **Tab label.** `1 Drift`, plus ` N` when the Drift view has N rows.
+- **Panes.** Wide: list and detail side by side, widths 2:3. Narrow
+  (terminal width below `ui.narrow_breakpoint`, rechecked on resize): list
+  above detail, equal heights. `tab` works only in the narrow layout; with
+  the detail focused, `j`/`k` scroll it.
+- **Key bar.** The current view's keys that work now, in the view's order;
+  then `space Select` and `/ Filter` when the list has rows; then
+  `? Help`. Every other key is in help and the palette, not the key bar.
+- **Log line.** `reading chezmoi…` while a read runs; otherwise the last
+  result, error or cancellation, empty at start. An error shows as
+  `✗ <message>`, in the error colour, with the message the CLI would print
+  after `cheztui: ` (§7).
+- **List.** One row is current. `/` opens a one-line filter input under the
+  list that filters as you type: case-insensitive substring of the target
+  as displayed (`~/…`); `enter` returns to the list keeping the filter,
+  `esc` clears it. `space` marks the current row selected (a `●` before
+  it; unselected rows have a space there). Selection is a set of targets:
+  it survives filtering, and a refresh keeps the targets still listed.
+  Actions take the selected rows the filter shows. After a refresh the
+  current row stays on its target if listed, else at the same position,
+  clamped.
+
 ## 5. Global behaviour
 
 ### Keys (global)
@@ -136,6 +170,39 @@ stack detail under the list; `tab` toggles focus.
 
 The session log holds every result and error of the session, in memory only;
 it is never written to disk.
+
+**Reads in the TUI** (DEC-33):
+
+- At start the TUI checks the chezmoi version (once per run, DEC-21), then
+  runs the Drift read (`ops.drift`) and the header read
+  (`ops.repo_state`) concurrently. `g` reruns both, and the version check
+  too while it hasn't passed. A new read cancels one still running.
+- `esc` on the main screen, with no input focused, cancels a read in
+  progress: the earlier data stays and the log line says `refresh
+  cancelled`.
+- A failed read clears what it feeds: the header fields go blank, or the
+  Drift list shows the error line in place of its rows and the tab drops
+  its count. A failed version check leaves everything blank. The diagnostic
+  is masked with the line-level rules and no `never_mask` exemption before
+  the log line or session log sees it, as DEC-30 masks output that can't
+  be assigned to a target.
+- `q` quits from the main screen.
+
+**Help, palette, session log:**
+
+- `?` opens help: the current view's keys under the view's name (all of
+  them, including ones the current row can't use), then the global keys
+  under `Global` in the table's order, one `key  description` per line.
+  Help, palette and key bar are generated from the same binding
+  declarations. `esc`, `?` or `q` closes it.
+- `:` opens the command palette with only cheztui's entries: the current
+  view's actions, then the global ones, that work right now, each showing
+  its key. Choosing one runs it as its key would. Textual's own system
+  commands aren't listed, and no other key opens the palette.
+- `l` opens the session log: entries oldest first, scrolled to the newest,
+  each `HH:MM:SS  <log-line text>`; an error is followed by its whole
+  masked diagnostic, indented two spaces. Every result, error and
+  cancellation is logged. `esc`, `l` or `q` closes it.
 
 ### Write flow
 
@@ -609,6 +676,13 @@ What a new machine would get.
 `1` some target failed / refused, `2` usage or config error, `3` chezmoi
 missing or broken, or a chezmoi read failed (DEC-25).
 
+With no arguments on a terminal, cheztui loads its config first; a config
+error, or a `ui.theme` Textual doesn't know (`<path>: ui.theme '<name>' is
+not a Textual theme`), prints `cheztui: <message>` on stderr and exits 2
+without starting the TUI. The global flags reach every chezmoi call the TUI
+makes, and the TUI checks the chezmoi version itself (§5, Reads in the TUI).
+Without a terminal it prints the help.
+
 Every command loads cheztui's config (§9) first, then checks the chezmoi
 version (DEC-21). A config error (exit 2) or a chezmoi error (exit 3) prints
 `cheztui: <message>` on stderr and nothing on stdout, with or without
@@ -927,6 +1001,20 @@ The settings screen (`,`) edits the scalar settings (`ui.*`, `refresh.*`,
 the lists. Each table arrives with the feature that reads it: v0.1 reads
 `[ui]`, `[refresh]` and `[secrets]`.
 
+The screen (DEC-33) lists one row per scalar, `key  value`, in the order
+`ui.theme`, `ui.diff_context`, `ui.narrow_breakpoint`, `refresh.watch`,
+`refresh.debounce_ms`, `secrets.token_formats`. `enter` on a boolean
+toggles it; on `ui.theme` it opens a list of the themes Textual knows; on
+an integer it opens an input on the row. A change is validated as the file
+would be, saved at once, and takes effect at once (the theme and the
+layout immediately; the others where they are next read). An invalid value
+shows its error on the row and isn't saved. `e` suspends the TUI and runs
+`$VISUAL`, else `$EDITOR`, else `vi`, split as shell words, on the config
+file; afterwards cheztui reloads it, and a config error shows on the screen
+while the settings from before the edit stay in effect. `esc` closes the
+screen. `-n` doesn't apply here: it covers chezmoi calls, not cheztui's own
+config.
+
 ```toml
 [ui]
 theme = "textual-dark"          # any Textual theme
@@ -1043,7 +1131,10 @@ src/cheztui/
 - **Integration:** `ops.py` against a real `chezmoi` binary in the scratch
   setup (skipped if chezmoi isn't installed).
 - **Fake:** `tests/fake_chezmoi.py` for TUI tests that need canned states
-  (drift in both directions, scripts, externals, errors).
+  (drift in both directions, scripts, externals, errors). It extends the
+  write path's fake (`tests/fake_write.py`), so one fake answers chezmoi and
+  git, and its drifted state replays the recorded fixtures, so it can't
+  drift from what real chezmoi prints.
 - **TUI:** `App.run_test()` + snapshot tests (pytest-textual-snapshot) for
   each view and the preview modal.
 - CI: macOS and Linux, pytest, ruff check/format, ty, packaging check. The

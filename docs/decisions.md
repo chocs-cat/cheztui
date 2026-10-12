@@ -506,3 +506,29 @@ than a fully masked exit 3; inside the destination a failure still
 propagates.
 
 *Where:* `docs/spec.md` §8 (Command, New files).
+
+## DEC-33: How the app frame reads, fails, filters and saves (2026-10)
+
+The spec named the frame's parts but left their behaviour open; these are
+the choices, written into `docs/spec.md` §4 (Frame details), §5 (Reads in
+the TUI; Help, palette, session log) and §9.
+
+- A failed read clears the data it feeds rather than leaving the last good
+  data on screen: drift that looks current but isn't is worse than an
+  error in its place. A cancelled read keeps the earlier data, since the
+  user chose to stop and nothing failed.
+- Read diagnostics in the TUI get line-level masking with no `never_mask`
+  exemption, DEC-30's rule for output that can't be assigned to a target.
+  Whole masking would hide every read error behind `********`.
+- The palette lists only the actions that work right now, as the key bar
+  does (DEC-3); help lists every key, since it is the reference.
+- The filter is a case-insensitive substring of the displayed target.
+  Selection survives the filter, but actions take only the selected rows
+  the filter shows, so nothing hidden is acted on.
+- The settings screen saves each change at once: no unsaved state, and no
+  save key to learn. `-n` doesn't touch it, since cheztui's config isn't
+  chezmoi's.
+- An unknown `ui.theme` is a config error at launch (exit 2, §9), checked
+  before the TUI starts.
+
+*Where:* `docs/spec.md` §4, §5, §7, §9.
