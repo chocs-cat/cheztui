@@ -538,6 +538,137 @@ would run.
   rows start ticked; `you→` and `both` rows start unticked and marked as
   overwriting your change. `space` ticks and unticks (DEC-16).
 
+**Rows and detail in the TUI** (DEC-34):
+
+- **Row.** The `●` gutter (§4), the direction as the CLI shows it, padded
+  to four columns (`both`, `you→`, `src→`, `run `), one space, the two
+  status columns, two spaces, the target in `~` form, then the tags,
+  space separated, after two spaces. The direction is coloured `both`
+  `$error`, `you→` `$warning`, `src→` `$success`, `run` `$accent`, and
+  the tags `$text-muted`; the word carries the meaning without colour
+  (DEC-7). The filter still matches the target alone (§4).
+- **Detail head.** Three lines: the target in `~` form, two spaces, the
+  direction in words (`you changed the target`, `the source changed`,
+  `both sides changed`, `the script will run`; any row whose first column
+  is `D` says `the target was deleted`); `source  <~ form>`, or
+  `source  (none)`; `fix     <default fix>`, followed by ` (overwrites
+  your change)` when it does (DEC-14). Then a horizontal rule, then the
+  body.
+- **Body: the diff.** `chezmoi diff --no-pager --color=false
+  --use-builtin-diff <target>`, read when the row becomes current. It is
+  masked as a diff for its target with the same classification a write
+  preview uses (§5 Drift command plans: whole for `enc`, `always_mask` and
+  a password-manager template; line level otherwise, honouring
+  `never_mask`; globs against the effective destination, DEC-26), then cut
+  to `ui.diff_context` (below). chezmoi's own `diff.reverse` and
+  `diff.exclude` apply as chezmoi applies them. Empty output shows
+  `(no diff)`. Lines are coloured by kind, not by language: `+` lines
+  `$success`, `-` lines `$error`, `@@` lines `$accent`, the other header
+  lines (`diff`, `index`, `---`, `+++`, mode lines) bold, context plain.
+- **Body: rendered** (`t`, `tmpl` rows only). `chezmoi cat <target>`,
+  decoded as UTF-8 with replacement, masked as a body with the same
+  classification, not cut. `t` toggles between the two bodies; the key bar
+  shows `t Rendered` over the diff and `t Diff` over the rendered output.
+  Moving to another row or a refresh returns to the diff.
+- **Detail reads.** While a body is read the pane shows the head and
+  `reading…`. Each row's bodies are kept until the next refresh, so moving
+  back shows them at once (DEC-6). Moving to another row cancels a body
+  read in progress, without a log entry. The effective destination comes
+  from `dump-config`, read at most once per refresh. A failed body read
+  shows `✗ <message>` (the read message form, §4 Log line) in place of the
+  body, masked like a read diagnostic (§5 Reads in the TUI), and is
+  logged in the session log when it is shown; the log line is left alone.
+- **Reveal** (`R`). Works when the body on screen had something masked, or
+  is revealed. It re-reads that body unmasked (still cut to
+  `ui.diff_context`) and marks the head's third line `revealed` in
+  `$warning`; `R` again, `t`, moving to another row, or a refresh drops
+  the revealed text. Revealed text lives only in the pane: it is never
+  kept with the cached bodies, logged, or shown in a preview, and
+  diagnostics stay masked (DEC-30).
+- **`ui.diff_context`** (N). chezmoi's built-in diff has three lines of
+  context and no flag to change it, and DEC-13 rules out diffing files
+  ourselves, so cheztui cuts it: with N below 3, each hunk keeps at most N
+  context lines before its first change and after its last, and a run of
+  more than 2N context lines between two changes splits the hunk in two.
+  Each new hunk's `@@` header is recomputed (a zero count's start is the
+  line before, as in any unified diff); a `\ No newline at end of file`
+  line stays with the line before it; lines outside hunks pass through.
+  N of 3 or more shows chezmoi's diff as it is. It applies to every diff
+  the TUI shows, after masking; the CLI's diffs keep three lines (§8).
+
+**Actions in the TUI** (DEC-35):
+
+- **Keys.** The view's keys, in key-bar order: `enter Fix` (each target's
+  default fix), `a Apply`, `r Re-add`, `m Merge`, `e Edit`, `d Full diff`,
+  `t Rendered` (above). `M` (merge the selection), `x` (forget) and `A`
+  (apply all) are in help and the palette, not the key bar. A key works,
+  and shows, when `ops.eligibility` admits at least one row it would take:
+  `a`, `r`, `x` and `M` take the targets (§4 List), `e` and `m` the
+  current row; `enter` and `d` need a current row, `A` a row in the list.
+  While a write is prepared or runs, no action key works.
+- **Prepare.** `enter` prepares the targets' default fixes, `a`, `r`, `x`
+  and `M` their action over the targets, `e` and `m` theirs over the
+  current row, and `A` apply-all over every row in the view, whatever the
+  filter and selection show. The log line says `preparing…`; `esc`
+  cancels it as it cancels a read, logging `preview cancelled` (nothing
+  writes before confirmation, §5). A failed preparation shows `✗
+  <message>` in the log line and its diagnostic in the session log.
+- **The preview modal** opens for a plan that needs confirmation, and for
+  any blocked plan, interactive ones included, so the stray files are
+  always shown. Top to bottom: each command's `display`, prefixed `$ `;
+  the entries, one line each, grouped by action in execution order under
+  the action's name, each the target in `~` form with its direction, then
+  ` overwrites your change` (`$warning`) when it does, ` left out: <reason>`
+  (muted) when excluded, or ` with <directory>` for a forgotten
+  directory's descendant; for a mixed selection, `then merge, suspended:`
+  and the merge targets; with auto-commit off and stray files, `warning:
+  uncommitted files in the source tree:` and one indented path per line;
+  then the current entry's masked diff, coloured and cut as in the detail,
+  or `(no preview)` for an entry with none. `j`/`k` move the current
+  entry. Apply-all shows `[x]` or `[ ]` before each entry and `space`
+  ticks the current one, rebuilding the commands (`WritePlan.with_selection`);
+  an excluded entry can't be ticked. The footer lists `enter Run` (`enter
+  Dry run` under `-n`), `space Tick` for apply-all, `j/k Move`, `esc
+  Cancel`; with nothing ticked `enter` does nothing and the footer says
+  `nothing ticked`. A blocked plan shows `✗ the source tree has
+  uncommitted changes; commit or remove them first:` and the stray paths,
+  or `✗ preview failed: <error>`, and only `esc Close`. `R` doesn't work in
+  the modal.
+- **Interactive plans** (`e`, `m`, `M`, and `enter` when every target's fix
+  is merge) open no modal unless blocked (DEC-4). They run through the
+  TUI's terminal runner: the command runs with the terminal under
+  `App.suspend()` and returns its exit code with empty output (§10). A
+  row left out of an interactive plan is named in the session log
+  (`left out of merge: ~/x (a directory)`). In a mixed selection the
+  merges run suspended after the modal's commands, as `ops` orders them.
+- **Running.** The log line says `running…` until the result; `esc` doesn't
+  cancel a write (§5).
+- **Result.** One session-log entry per command result, in order, a failed
+  one followed by its whole masked stderr indented two spaces, a refused
+  one by its stray paths; then `not run: <action> <targets>` for each
+  command left unrun. The log line joins the command results' lines with
+  `; ` (in the error colour if any failed), or shows `✗ <reason>` when
+  nothing ran. A command's line, where `<targets>` is the one target in
+  `~` form or `N targets` (the first three rows are the lines `cheztui
+  edit` and `add` print, §8, from the same code):
+
+  | Command result | Line |
+  |---|---|
+  | committed | `<verb> <targets> → <sha7> "<subject>" (pushed)`, or `(not pushed)` |
+  | ran, no commit | `<verb> <targets> (not committed)`, or `(no commit)` |
+  | dry run | `would <action> <targets> (dry run)` |
+  | failed | `✗ <action> <targets> failed: <error>` |
+  | refused at execution | `✗ <action> <targets> refused: <reason>` |
+  | ran, result unreadable | `✗ <action> <targets> ran, but reading the result failed: <error>` |
+
+  The verbs are `applied`, `re-added`, `forgot`, `edited`, `merged`,
+  `added`. After any execution attempt the selection is cleared and the
+  view refreshes (§5).
+- **`d`** suspends and runs `chezmoi diff <target>` through the terminal
+  runner, so chezmoi's pager and diff command apply. It is a read, not a
+  write: no pre-flight, and it runs under `-n`. A non-zero exit shows
+  `✗ chezmoi diff exited N` in the log line and session log.
+
 ### 2 · Files
 
 All managed entries, as a collapsible tree of targets.
@@ -1010,7 +1141,11 @@ toggles it; on `ui.theme` it opens a list of the themes Textual knows; on
 an integer it opens an input on the row. A change is validated as the file
 would be, saved at once, and takes effect at once (the theme and the
 layout immediately; the others where they are next read). An invalid value
-shows its error on the row and isn't saved. `e` suspends the TUI and runs
+shows its error on the row and isn't saved. A valid value that can't be
+written (a read-only file, a full disk) shows the save error on the row
+and is put back, so the screen, the file and what is in effect keep the
+previous value (#32). `ui.diff_context` cuts the TUI's diffs (§6 Drift,
+DEC-34). `e` suspends the TUI and runs
 `$VISUAL`, else `$EDITOR`, else `vi`, split as shell words, on the config
 file; afterwards cheztui reloads it, and a config error shows on the screen
 while the settings from before the edit stay in effect. `esc` closes the
