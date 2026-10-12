@@ -268,6 +268,14 @@ nothing, unless the result matches the expected hash, so what lands is what
 the dry run showed. It writes in place, never by rename. `--allow-drift`
 passes `--force`, since applying then overwrites the target's change.
 
+*Amended 2026-10 (#26):* `_editor` runs as the running interpreter's
+`python -P -m cheztui _editor`. Plain `-m` puts the working directory first
+on `sys.path`, and chezmoi runs the editor in the caller's working
+directory, so a `difflib.py` or `json.py` there was imported (and ran) in
+place of the standard library's. `-P` (Python 3.11+, the floor) leaves the
+working directory off the path; `-I` would also drop user site-packages and
+`PYTHONPATH`, which an install may rely on.
+
 *Where:* `docs/spec.md` §8.
 
 ## DEC-19: CLI contracts for v0.1 (2026-10)
@@ -491,4 +499,10 @@ read failure for a target inside the destination still propagates as exit
 3 (DEC-25), as does a failed config read. This keeps the planned refusal
 order for valid targets without treating a failed state read as empty.
 
-*Where:* `docs/spec.md` §8 (New files).
+*Amended 2026-10 (#26):* `cheztui edit` hits the same rejection in its
+step-1 `managed` read. A target outside the destination isn't managed, so
+the same check makes it step 1's exit-1 "isn't managed" refusal rather
+than a fully masked exit 3; inside the destination a failure still
+propagates.
+
+*Where:* `docs/spec.md` §8 (Command, New files).

@@ -628,7 +628,7 @@ error line.
 | `cheztui verify [--json]` | Pass/fail, failing targets |
 | `cheztui doctor [--json]` | Parsed doctor results |
 | `cheztui preview [--profile NAME] [--json]` | Temp-dir new-machine preview |
-| `cheztui edit <target> --ops FILE [--dry-run] [--allow-drift] [--reveal] [--json]` | Safe scripted edit (§8) |
+| `cheztui edit <target> --ops FILE\|- [--dry-run] [--allow-drift] [--reveal] [--json]` | Safe scripted edit (§8) |
 | `cheztui add <path> [--template] [--encrypt] [--dry-run] [--reveal] [--json]` | Bring a new file under management (§8) |
 
 Global flags: `--dry-run/-n`, `--chezmoi-config PATH`, `--source PATH`,
@@ -695,7 +695,10 @@ step that fails:
 
 1. **Managed?** `chezmoi managed --format=json --path-style=all <target>`.
    Not managed (no entry whose absolute path is the target) → exit 1 with a
-   message pointing at `cheztui add`. The same
+   message pointing at `cheztui add`. When `managed` rejects the target,
+   the effective destination from `dump-config` decides: a target outside
+   it is not managed (the same refusal); inside it, the failure exits 3
+   (DEC-32). The same
    read with `--include=files`, `templates`, `encrypted` and `externals`
    gives the entry's kind and attributes (DEC-15). An external, or a target
    that isn't a regular file (a directory, symlink or script), is refused:
@@ -724,9 +727,10 @@ step that fails:
 7. **Write** by running `chezmoi edit --apply --hardlink=false [--force]
    <target>` with cheztui itself as `$EDITOR` and `$VISUAL` (an internal
    `cheztui _editor` entry point that writes in place, never renames; the
-   value is the running interpreter's `python -m cheztui _editor`,
+   value is the running interpreter's `python -P -m cheztui _editor`,
    shell-quoted, which chezmoi splits as a shell would, so PATH doesn't
-   matter). The
+   matter; `-P` keeps the working directory off `sys.path`, so a module
+   there can't shadow one cheztui imports, DEC-18). The
    ops spec and the expected result's sha256 reach `_editor` in a 0600
    temporary file named by `CHEZTUI_EDIT_SPEC`, deleted afterwards.
    `_editor` re-applies the spec to the file chezmoi hands it and writes
