@@ -203,13 +203,16 @@ async def test_session_log_entries(tmp_path):
         binary="chezmoi",
     )
     app = make_app(fake, tmp_path)
-    times = iter([datetime(2026, 10, 12, 9, 5, 1), datetime(2026, 10, 12, 9, 5, 7)])
+    times = iter(datetime(2026, 10, 12, 9, 5, s) for s in (1, 7, 9))
     app.now = lambda: next(times)
     async with app.run_test() as pilot:
         await settled(pilot)
         release = fake.hold("dump-config")
         await pilot.press("g")
-        await pilot.pause()
+        for _ in range(100):  # the reread's failure is logged as it's shown
+            if len(app.session_log) == 2:
+                break
+            await pilot.pause()
         await pilot.press("escape")
         await settled(pilot)
         release.set()
@@ -219,7 +222,10 @@ async def test_session_log_entries(tmp_path):
             "09:05:01  ✗ chezmoi exited 1: chezmoi: token ********\n"
             "  chezmoi: first line\n"
             "  chezmoi: token ********\n"
-            "09:05:07  refresh cancelled"
+            "09:05:07  ✗ chezmoi exited 1: chezmoi: token ********\n"
+            "  chezmoi: first line\n"
+            "  chezmoi: token ********\n"
+            "09:05:09  refresh cancelled"
         )
 
 
@@ -367,6 +373,36 @@ async def test_choosing_a_theme_applies_and_saves_it(tmp_path):
         assert app.theme == "nord"
         assert 'theme = "nord"' in path.read_text()
         assert row_text(app, "ui.theme") == "ui.theme  nord"
+
+
+async def test_a_theme_whose_save_fails_is_put_back(tmp_path):
+    # The file is read-only: the row shows the error and the old theme, nothing
+    # is applied, and a later change saves only its own key (spec §9, #32).
+    app, path = settings_app(tmp_path, '[ui]\ntheme = "textual-dark"\n')
+    before = path.read_text()
+    path.chmod(0o444)
+    async with app.run_test() as pilot:
+        await open_settings(pilot, "ui.theme")
+        await pilot.press("enter")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, ThemePicker)
+        steps = picker.themes.index("nord") - picker.themes.index("textual-dark")
+        await pilot.press(*["down" if steps > 0 else "up"] * abs(steps))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert row_text(app, "ui.theme") == (
+            "ui.theme  textual-dark  ✗ can't save: Permission denied"
+        )
+        assert app.theme == "textual-dark"
+        assert app.settings.ui.theme == "textual-dark"
+        assert path.read_text() == before
+        path.chmod(0o644)
+        await pilot.press("down", "down", "down", "down")
+        await pilot.press("enter", "ctrl+u", *"500", "enter")
+        await pilot.pause()
+        assert path.read_text() == before + "\n[refresh]\ndebounce_ms = 500\n"
+        assert app.theme == "textual-dark"
 
 
 async def test_the_breakpoint_takes_effect_at_once(tmp_path):

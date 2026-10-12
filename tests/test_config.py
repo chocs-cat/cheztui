@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 
 import pytest
@@ -152,6 +153,66 @@ def test_save_through_a_symlink_keeps_it(tmp_path: Path, path: Path):
     assert path.is_symlink()
     assert path.resolve() == real.resolve()
     assert load(real).ui.narrow_breakpoint == 80
+
+
+def test_a_failed_save_puts_the_setting_back(path: Path):
+    # A read-only file: the change is undone in the config and its document (#32).
+    write(path, '[ui]\ntheme = "nord"\n')
+    before = path.read_text()
+    config = load(path)
+    path.chmod(0o444)
+    with pytest.raises(PermissionError):
+        config.change("ui.theme", "dracula")
+    assert config.ui.theme == "nord"
+    assert path.read_text() == before
+    path.chmod(0o644)
+    config.change("refresh.debounce_ms", 50)
+    assert path.read_text() == before + "\n[refresh]\ndebounce_ms = 50\n"
+
+
+def test_a_failed_save_of_a_new_key_leaves_no_trace(path: Path):
+    write(path, "# empty\n")
+    config = load(path)
+    path.chmod(0o444)
+    with pytest.raises(PermissionError):
+        config.change("ui.diff_context", 1)
+    path.chmod(0o644)
+    config.save()
+    assert path.read_text() == "# empty\n"
+    assert config.ui.diff_context == 3
+
+
+def test_a_write_that_fails_part_way_puts_the_file_back(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Opening empties the file; a full disk then fails the write (spec §9).
+    write(path, "[ui]\ndiff_context = 2\n")
+    config = load(path)
+    opened = Path.open
+
+    class Full:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.f.close()
+
+        def write(self, _text):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    def fake_open(self, mode="r", *args, **kwargs):
+        f = opened(self, mode, *args, **kwargs)
+        return Full(f) if mode == "w" else f
+
+    monkeypatch.setattr(Path, "open", fake_open)
+    with pytest.raises(OSError, match="No space left"):
+        config.change("ui.diff_context", 1)
+    monkeypatch.undo()
+    assert path.read_text() == "[ui]\ndiff_context = 2\n"
+    assert config.ui.diff_context == 2
 
 
 @pytest.mark.parametrize(

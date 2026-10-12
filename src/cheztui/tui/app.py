@@ -344,7 +344,11 @@ class CheztuiApp(App[None]):
             # parser messages that quote chezmoi's output (DEC-33).
             message = ops.mask_diagnostic(masker, ops.failure_message(error), whole=False)
             stderr = error.stderr if isinstance(error, ChezmoiFailed | GitFailed) else ""
-            failures.append((message, stderr.rstrip("\n") or message))
+            diagnostic = stderr.rstrip("\n") or message
+            failures.append((message, diagnostic))
+            # Logged as it is shown: a read cancelled before it ends must not
+            # drop an error already on screen (spec §5, #31).
+            self.record(f"✗ {message}", diagnostic)
 
         if not self._version_ok:
             try:
@@ -383,12 +387,11 @@ class CheztuiApp(App[None]):
         self._finish(read_id, failures)
 
     def _finish(self, read_id: int, failures: list[tuple[str, str]]) -> None:
+        """End the read: the log line shows its first failure, already logged."""
         self._render_frame()
         if read_id != self._read_id:
             return
         self.reading = False
-        for message, diagnostic in failures:
-            self.record(f"✗ {message}", diagnostic)
         if failures:
             self.set_log_line(failures[0][0], error=True)
         else:
