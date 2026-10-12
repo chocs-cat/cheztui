@@ -55,6 +55,7 @@ Plans and results hold masked text only: raw chezmoi output stays inside
 the write path. The CLI commands and TUI views that drive writes aren't
 built yet; tests drive `WriteOps` directly, with `tests/fake_write.py` for
 fakes and the scratch setup for the real binary.
+
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and
 `--config` (see AGENTS.md, "Live chezmoi: rules"). The tests that run
