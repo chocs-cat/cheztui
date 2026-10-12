@@ -537,3 +537,54 @@ read error left under a header that just loaded would contradict it, and a
 log entry per refresh would bury the errors.
 
 *Where:* `docs/spec.md` §4, §5, §7, §9.
+
+## DEC-34: How the Drift view shows a row (2026-10)
+
+The spec named the Drift detail's parts (paths, direction in words, a
+highlighted diff, `t`, `R`) but not their behaviour; these are the choices,
+written into `docs/spec.md` §6 (Rows and detail in the TUI) and §9.
+
+- The diff is chezmoi's built-in diff (`--use-builtin-diff`), so a
+  configured `diff.command` such as a pager-styled tool can't change what
+  cheztui parses and masks; `d` is where the user's own diff tool runs.
+  Highlighting is by line kind only: per-language highlighting of a diff's
+  fragments would be guesswork for templates and dotfiles without
+  extensions.
+- The detail is masked with the same classification as a write preview, so
+  a file never shows more in the detail than in the preview.
+- `ui.diff_context` cuts chezmoi's three lines of context rather than
+  asking for more: chezmoi has no context flag, and computing diffs from
+  the target files would read the destination behind chezmoi's back
+  (DEC-13). Settled with the maintainer; dropping the setting until a view
+  computes its own diffs, or keeping it with no effect, were the
+  alternatives.
+- Bodies are cached per row until the next refresh (DEC-6); a failed body
+  read stays in the pane and the session log, since the log line belongs to
+  refreshes and writes.
+- `R` re-reads the body unmasked instead of keeping the clear text beside
+  the masked one, so nothing unmasked outlives the pane (DEC-17, DEC-30).
+
+*Where:* `docs/spec.md` §6 (Drift), §9.
+
+## DEC-35: How Drift actions run in the TUI (2026-10)
+
+The write path (DEC-8, DEC-27 to DEC-29) settled what runs; these are the
+TUI's choices around it, written into `docs/spec.md` §6 (Actions in the
+TUI).
+
+- Key availability comes from `ops.eligibility`, the rule the plans use,
+  so a key is never shown for a write the plan would refuse whole.
+- A blocked plan always opens the modal, interactive ones included: DEC-4
+  drops the modal for edit and merge because there is nothing to preview,
+  but the stray files still need showing, and a log line can't hold them.
+- The modal shows one entry's diff at a time, chosen with `j`/`k`; that is
+  the "expandable diffs" of DEC-8 without a second toggle key.
+- The selection is cleared after any execution attempt: a selection kept
+  across the refresh would invite running the next action on rows that
+  were just changed.
+- Result lines share their form and code with `cheztui edit` and `add`, so
+  the CLI and the TUI can't word a commit differently.
+- `d` is a read run in the terminal, not a write: it needs no pre-flight
+  and works under `-n`.
+
+*Where:* `docs/spec.md` §6 (Drift).
