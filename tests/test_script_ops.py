@@ -1,6 +1,7 @@
 """Scripted edit/add through the real, isolated write path (spec §8, §11)."""
 
 import json
+import shlex
 import stat
 import subprocess
 from dataclasses import replace
@@ -211,6 +212,8 @@ async def test_temp_spec_mode_cleanup_and_hash_guard(scratch, fail):
     async def runner(argv, *, cwd=None, env=None, stdin=None):
         if subcommand(argv)[0] == "edit":
             assert env is not None
+            assert env["EDITOR"] == env["VISUAL"]
+            assert shlex.split(env["EDITOR"])[1:] == ["-P", "-m", "cheztui", "_editor"]
             path = Path(env["CHEZTUI_EDIT_SPEC"])
             paths.append(path)
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -232,6 +235,23 @@ async def test_temp_spec_mode_cleanup_and_hash_guard(scratch, fail):
         assert target.read_bytes() == b"old\n"
     else:
         assert result.verified
+
+
+@requires_chezmoi
+async def test_editor_ignores_working_directory_modules(scratch, monkeypatch):
+    # chezmoi runs the editor in the caller's working directory (§8 step 7, DEC-18).
+    target = setup_file(scratch)
+    cwd = scratch.root / "checkout"
+    cwd.mkdir()
+    marker = scratch.root / "marker"
+    (cwd / "difflib.py").write_text(
+        f"import pathlib, sys\npathlib.Path({str(marker)!r}).write_text('ran')\nsys.exit(1)\n"
+    )
+    monkeypatch.chdir(cwd)
+    result = assert_result(await write_ops(scratch).edit(target, SPEC))
+    assert result.verified is True
+    assert target.read_bytes() == b"new\n"
+    assert not marker.exists()
 
 
 def setup_age(scratch):

@@ -615,7 +615,8 @@ class WriteOps:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"spec": spec.raw, "sha256": expected}, f)
-            editor = shlex.join([sys.executable, "-m", "cheztui", "_editor"])
+            # -P keeps the working directory off sys.path (§8 step 7, DEC-18).
+            editor = shlex.join([sys.executable, "-P", "-m", "cheztui", "_editor"])
             args = (
                 "edit",
                 "--apply",
