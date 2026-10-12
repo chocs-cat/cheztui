@@ -344,7 +344,11 @@ class CheztuiApp(App[None]):
             # parser messages that quote chezmoi's output (DEC-33).
             message = ops.mask_diagnostic(masker, ops.failure_message(error), whole=False)
             stderr = error.stderr if isinstance(error, ChezmoiFailed | GitFailed) else ""
-            failures.append((message, stderr.rstrip("\n") or message))
+            diagnostic = stderr.rstrip("\n") or message
+            failures.append((message, diagnostic))
+            # Every error is logged as it happens (#31): a read cancelled
+            # before it finishes must still leave its failures in the log.
+            self.record(f"✗ {message}", diagnostic)
 
         if not self._version_ok:
             try:
@@ -387,8 +391,8 @@ class CheztuiApp(App[None]):
         if read_id != self._read_id:
             return
         self.reading = False
-        for message, diagnostic in failures:
-            self.record(f"✗ {message}", diagnostic)
+        # The failures themselves are logged as they happen (#31); a read that
+        # finishes sets its first failure as the log line.
         if failures:
             self.set_log_line(failures[0][0], error=True)
         else:

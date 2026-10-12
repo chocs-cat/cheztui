@@ -303,6 +303,33 @@ async def test_esc_cancels_a_read_and_keeps_the_data(tmp_path):
         assert text(app, "#log-line") == "refresh cancelled"
 
 
+async def test_a_failure_is_logged_even_when_the_read_is_cancelled(tmp_path):
+    # The Drift read fails while the header's read still runs; `esc` then
+    # cancels the read, and the failure must already be in the session log (#31).
+    fake = FakeChezmoi.drifted()
+    fake.fail("status", b"chezmoi: status broke\n", binary="chezmoi")
+    release = fake.hold("dump-config")
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        for _ in range(100):
+            if text(app, "#list-message"):
+                break
+            await pilot.pause()
+        assert text(app, "#list-message") == "✗ chezmoi exited 1: chezmoi: status broke"
+        await pilot.press("escape")
+        await settled(pilot)
+        entries = [(e.text, e.diagnostic) for e in app.session_log]
+        assert entries == [
+            ("✗ chezmoi exited 1: chezmoi: status broke", "chezmoi: status broke"),
+            ("refresh cancelled", None),
+        ]
+        release.set()
+        await settled(pilot)
+        # The read that ends after the cancellation doesn't log its failures again.
+        assert [(e.text, e.diagnostic) for e in app.session_log] == entries
+
+
 async def test_esc_without_a_read_does_nothing(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:

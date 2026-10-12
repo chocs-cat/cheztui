@@ -203,13 +203,24 @@ async def test_session_log_entries(tmp_path):
         binary="chezmoi",
     )
     app = make_app(fake, tmp_path)
-    times = iter([datetime(2026, 10, 12, 9, 5, 1), datetime(2026, 10, 12, 9, 5, 7)])
+    times = iter(
+        [
+            datetime(2026, 10, 12, 9, 5, 1),
+            datetime(2026, 10, 12, 9, 5, 7),
+            datetime(2026, 10, 12, 9, 5, 11),
+        ]
+    )
     app.now = lambda: next(times)
     async with app.run_test() as pilot:
         await settled(pilot)
         release = fake.hold("dump-config")
         await pilot.press("g")
-        await pilot.pause()
+        for _ in range(100):
+            if len(app.session_log) == 2:
+                break
+            await pilot.pause()
+        # The reread's own failure is logged as it happens (#31), then the
+        # cancellation; three entries.
         await pilot.press("escape")
         await settled(pilot)
         release.set()
@@ -219,7 +230,10 @@ async def test_session_log_entries(tmp_path):
             "09:05:01  ✗ chezmoi exited 1: chezmoi: token ********\n"
             "  chezmoi: first line\n"
             "  chezmoi: token ********\n"
-            "09:05:07  refresh cancelled"
+            "09:05:07  ✗ chezmoi exited 1: chezmoi: token ********\n"
+            "  chezmoi: first line\n"
+            "  chezmoi: token ********\n"
+            "09:05:11  refresh cancelled"
         )
 
 
