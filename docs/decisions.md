@@ -445,3 +445,36 @@ If preparation fails before target masking metadata is available, mask the
 diagnostic whole until it can be classified.
 
 *Where:* `docs/spec.md` §5 (Write flow, Diagnostics; Secrets).
+
+## DEC-31: What `cheztui edit` and `cheztui add` refuse, and how the engine reads text (2026-10)
+
+The edit and add procedures (DEC-11, DEC-18, DEC-19) left these open:
+
+- **Edit takes regular files only.** An external has no source file to edit,
+  a symlink's source is its link target rather than text, a directory has no
+  text, and `chezmoi edit --apply` on a script would run it as a side effect
+  of an agent's text change. Each is refused. Kinds and attributes come from
+  `chezmoi managed --include=…` on the target, not from source names
+  (DEC-15), so templates are detected by chezmoi, not by a `.tmpl` suffix.
+- **A set `edit.command` refuses the edit.** chezmoi prefers its
+  `edit.command` setting to `$VISUAL` and `$EDITOR`, and has no flag to
+  override it (observed with chezmoi 2.71), so the user's editor would open
+  instead of `_editor`. Refusing, dry runs included, is the safe answer;
+  rewriting the user's chezmoi config for the call is not.
+- **Text is exact UTF-8.** The engine works on the source's exact bytes
+  decoded as UTF-8, keeping CRLF line endings, where the script's text-mode
+  reads translated them. A non-UTF-8 source is refused. A boolean `count`
+  and a non-string field are refusals rather than the script's accidental
+  acceptance or traceback; every other rule and message is the script's.
+- **The diff closes every hunk.** Unified diff headers name the target
+  relative to the destination, and a line with no final newline is followed
+  by `\ No newline at end of file`. Without it, difflib joins that line to
+  the next, which breaks the hunk counts the masking engine relies on and
+  could leave an encrypted line unmasked.
+- **Add refuses a directory that holds a managed entry.** `chezmoi add` of
+  such a directory re-adds the managed entry, overwriting its source (a
+  template's included). The refusal points at `cheztui edit`, like the one
+  for a managed path. An ignored path makes chezmoi add nothing and exit 0;
+  cheztui reports that as a refusal (dry run) or an error (real run).
+
+*Where:* `docs/spec.md` §8 (Command, Ops spec, New files).

@@ -685,40 +685,72 @@ cheztui edit ~/.zshrc --ops -                          # spec on stdin
 
 It takes one target per call, as today's script does. A failure affects
 only that file, and each successful call produces one commit. Agents call
-it once per file.
+it once per file. The target has `~` expanded and is made absolute against
+the working directory, without resolving symlinks. The spec (`--ops FILE`,
+or `-` for stdin) is read as UTF-8 and parsed as JSON before any chezmoi
+call; a spec that can't be read or parsed is a refusal (exit 1).
 
-It runs the skill's whole procedure as one command:
+It runs the skill's whole procedure as one command, refusing at the first
+step that fails:
 
-1. **Managed?** `chezmoi source-path <target>`. Not managed → exit 1 with a
-   message pointing at `cheztui add`.
-2. **Template?** If the source ends in `.tmpl`, say so in the output (and
-   in `--json`), since the applied result differs from the edit.
+1. **Managed?** `chezmoi managed --format=json --path-style=all <target>`.
+   Not managed → exit 1 with a message pointing at `cheztui add`. The same
+   read with `--include=files`, `templates`, `encrypted` and `externals`
+   gives the entry's kind and attributes (DEC-15). An external, or a target
+   that isn't a regular file (a directory, symlink or script), is refused:
+   `cheztui edit` changes one file's text, and applying an edited script
+   would run it (DEC-31).
+2. **Template?** If chezmoi lists it as a template, say so in the output
+   (and in `--json`), since the applied result differs from the edit.
 3. **Drift?** If `chezmoi status <target>` is non-empty, refuse (exit 1):
    applying would clobber the target. `--allow-drift` overrides, and passes
    `--force` so the apply overwrites the target's change.
-4. **Clean source tree?** When chezmoi auto-commits (§5, DEC-23), refuse if
-   `git status --porcelain` in the source dir is non-empty, listing the
-   stray files. With it off, warn and go on (DEC-8).
-5. **Apply ops** to the source text in memory, with the same rules as
-   today's script; on any failure, exit 1 having written nothing. An
-   encrypted source is read as plaintext with `chezmoi decrypt`.
+4. **Pre-flight.** The write path's pre-flight (§5). Refuse if chezmoi's
+   `edit.command` is set: chezmoi then runs that editor and ignores
+   `$EDITOR`, so step 7 can't hand the change over (DEC-31). When chezmoi
+   auto-commits (§5, DEC-23), refuse if `git status --porcelain` in the
+   source dir is non-empty, listing the stray files. With it off, warn and
+   go on (DEC-8).
+5. **Apply ops** to the source text in memory, with the rules below; on any
+   failure, exit 1 having written nothing. The text is the source's exact
+   bytes, decoded as UTF-8 (a source that isn't UTF-8 is refused), with its
+   line endings kept: read through chezmoi with `execute-template` and
+   `include` (§5), or as plaintext with `chezmoi decrypt <source>` for an
+   encrypted one.
 6. **`--dry-run`** (or the global `-n`) prints the unified diff and stops.
    The diff is masked for encrypted targets and `always_mask` files unless
    `--reveal` is passed (DEC-17).
-7. **Write** by running `chezmoi edit --apply --hardlink=false <target>`
-   with cheztui itself as `$EDITOR`/`$VISUAL` (an internal
+7. **Write** by running `chezmoi edit --apply --hardlink=false [--force]
+   <target>` with cheztui itself as `$EDITOR` and `$VISUAL` (an internal
    `cheztui _editor` entry point that writes in place, never renames). The
    ops spec and the expected result's sha256 reach `_editor` in a 0600
    temporary file named by `CHEZTUI_EDIT_SPEC`, deleted afterwards.
    `_editor` re-applies the spec to the file chezmoi hands it and writes
    nothing unless the result matches that hash, so what lands is what the
-   dry run showed (DEC-18).
-8. **Verify:** source contains the change, target matches
-   (`chezmoi verify <target>`), report the commit made and push state.
+   dry run showed (DEC-18). The command goes through the write path: a
+   fresh pre-flight first, `HEAD` before and after (§5, DEC-27).
+8. **Verify:** `verified` is true when the source, read again as in step 5,
+   gives the expected hash and `chezmoi verify <target>` exits 0. Report the
+   commit made and push state.
+
+**The diff** is a unified diff of the source text with three lines of
+context, headed `--- a/<target>` and `+++ b/<target>`, the target relative
+to the destination. A line without a final newline is followed by
+`\ No newline at end of file`, so every hunk's line counts hold (DEC-31).
+
+**`_editor`** (`cheztui _editor <path>`) is dispatched before argument
+parsing: it isn't in `--help`, and it loads no config and runs no chezmoi.
+It takes exactly one path, reads `CHEZTUI_EDIT_SPEC` (JSON:
+`{"spec": <the ops spec as given>, "sha256": "<hex>"}`), reads the file's
+bytes as UTF-8, applies the spec with the same engine, and writes the result
+in place only when its sha256 (of the UTF-8 bytes) is the expected one; a
+skip counts as a mismatch. It exits 0 when written and 1 when refused, with
+its message on stderr as `cheztui _editor: <message>`; a non-zero exit makes
+chezmoi abort without applying.
 
 ### Ops spec
 
-Unchanged from `chezmoi-editor.py`, so existing specs keep working:
+Compatible with `chezmoi-editor.py`, so existing specs keep working:
 
 ```json
 {
@@ -736,27 +768,115 @@ Ops: `replace` (`old`/`new`), `delete` (`old`), `insert_after` /
 to 1 and is an assertion (`"all"` = any number ≥ 1). A bare list of ops is
 accepted. `skip_if_contains` makes a re-run a no-op (exit 0).
 
-Human output is the diff, then one result line in the TUI's log-line
-form (`edited ~/.zshrc → a1b2c3d "Update dot_zshrc" (pushed)`). Refusals go
-to stderr.
+The rules, in the script's order:
+
+- The spec is a JSON object, or a list taken as `{"ops": <list>}`; `ops`
+  must be a non-empty list. Unknown keys are ignored.
+- `skip_if_contains`, when it is a non-empty string the source contains,
+  skips before any op is looked at. It must be a string when present and
+  not `null`.
+- Ops apply in order, each to the previous one's result. Each op is an
+  object with an `op` name; a needed field that is missing or `null`, or
+  given but not a string, is an error.
+- `replace`, `delete`, `insert_after` and `insert_before` count the
+  non-overlapping occurrences of `old` or `anchor` (Python's `str.count`)
+  and replace that many, or all of them for `"all"`; `insert_after` puts
+  `text` after each occurrence, `insert_before` before it.
+- `append` adds a newline first when the text is non-empty and doesn't end
+  with one, then `text`; `prepend` puts `text` first. Neither checks a
+  count.
+- `regex_replace` compiles `pattern` with Python's `re` and the `flags`
+  letters (`m`, `s`, `i`, `x`), counts `findall` matches and substitutes
+  with `re.sub` (Python's replacement syntax, `\1`, `\g<name>`).
+- `count` is a positive integer or `"all"`; a boolean is not an integer.
+- When every op has run, a result identical to the source is an error.
+
+Messages, with `op N (<name>)` labelling op N (from 1) and `<target>` the
+target in `~` form:
+
+| Case | Message |
+|---|---|
+| not JSON | `edit spec is not valid JSON: <error>` |
+| wrong top-level type | `edit spec must be a JSON object or list of ops` |
+| no ops | `edit spec has no 'ops' list` |
+| op not an object | `op N is not an object` |
+| field missing | `op N (replace): needs 'old' and 'new'` (likewise `'old'`, `'anchor' and 'text'`, `'text'`, `'pattern' and 'repl'`) |
+| field not a string | `op N (replace): 'old' must be a string` |
+| bad `count` | `op N (replace): 'count' must be a positive integer or "all"` |
+| no match, `"all"` | `op N (replace): no match found` |
+| no match | `op N (replace): no match found (expected 1)` |
+| wrong number | `op N (replace): matched 2 time(s) but expected 1 - make the match string more specific, or set "count"` |
+| bad flag | `op N (regex_replace): unknown regex flag 'q' (use m, s, i, x)` |
+| bad regex | `op N (regex_replace): bad regex: <error>` |
+| bad replacement | `op N (regex_replace): bad replacement: <error>` |
+| unknown op | `op N (frob): unknown op 'frob'` |
+| no change | `ops produced no change to <target> - the spec is probably wrong` |
+
+**Output.** Human output is the diff on stdout, then one result line in the
+TUI's log-line form; notes, warnings and refusals go to stderr.
+
+| Case | stdout result line |
+|---|---|
+| committed | `edited ~/.zshrc → a1b2c3d "Update .zshrc" (pushed)`, or `(not pushed)` |
+| no commit | `edited ~/.zshrc (not committed)`, or `(no commit)` |
+| dry run | `would edit ~/.zshrc (dry run)` |
+| skipped (no diff) | `skipped ~/.zshrc: already contains 'alias buccl=', leaving unchanged` |
+
+The sha is seven characters; the subject is git's, in double quotes. A
+template adds `note: ~/.zshrc is a template; the applied result differs
+from the edit` on stderr; stray files with auto-commit off add `warning:
+uncommitted files in the source tree:` and one indented path per line. A
+refusal prints `cheztui: <message>` and, for a dirty tree, the stray files
+indented two spaces.
 
 `--json` output: `{target, source, template, encrypted, skipped, diff,
-commit, pushed, verified}`. `diff` is the unified diff (masked as above);
-`commit` is `{"sha", "subject"}` or `null`; `pushed` is `true`, `false` or
-`null` (DEC-19); `verified` is `null` on a dry run or a skip. A refusal
+commit, pushed, verified}`. `target` and `source` are absolute; `diff` is
+the unified diff (masked as above), `""` when skipped; `commit` is
+`{"sha", "subject"}` (the full sha) or `null`; `pushed` is `true`, `false`
+or `null` (DEC-19); `verified` is `null` on a dry run or a skip. A refusal
 exits 1 with `{"error": "…", "stray": [path, …]}` on stdout, `stray` only
-for a dirty tree.
+for a dirty tree. Warnings and notes go to stderr in JSON mode too.
+
+**Failures after the write starts.** When the chezmoi command fails, or
+runs but the target doesn't verify, the exit is 1: `--json` prints the
+success shape plus `"error"`, and human output prints chezmoi's masked
+stderr, then `cheztui: <error>`. The error is the last `cheztui _editor:`
+line in chezmoi's stderr when there is one, else the write path's short
+error (§5, Diagnostics); for a verify failure, `<target> doesn't verify
+after the edit`. Exit codes otherwise follow §7: 2 for usage and config
+errors, 3 when chezmoi is missing or broken or a chezmoi read fails; a
+pre-flight git failure is a refusal (`pre-flight failed: …`).
 
 ### New files
 
 `cheztui add <path> [--template] [--encrypt] [--dry-run]` wraps
 `chezmoi add` with the same clean-tree check and result report, so the
 skill has one tool for both cases. It takes one path (a file, or a
-directory added recursively) and refuses one chezmoi already manages,
-pointing at `cheztui edit` (DEC-19). Its dry run is
-`chezmoi add --dry-run --verbose`. `--json` output: `{target, source,
-template, encrypted, diff, commit, pushed, verified}`, with `diff` masked
-for encrypted and `always_mask` files unless `--reveal`.
+directory added recursively), normalized as `edit`'s target, and refuses
+one chezmoi already manages, pointing at `cheztui edit` (DEC-19): the path
+is refused when `chezmoi managed --format=json --path-style=all <path>`
+lists anything, which for a directory includes a managed entry under it,
+since `chezmoi add` would overwrite that entry's source (DEC-31).
+
+After the pre-flight (§5) it runs the dry run, `chezmoi add --dry-run
+--verbose --no-pager --color=false --use-builtin-diff [--template]
+[--encrypt] <path>`, whose output is the diff. A failed dry run (a path
+that doesn't exist, or isn't under the destination) is a refusal carrying
+chezmoi's last error line; empty output (an ignored path) is the refusal
+`chezmoi would add nothing to the source`, with chezmoi's last stderr line
+when there is one. `--dry-run` (or `-n`) stops there; otherwise `chezmoi
+add [--template] [--encrypt] <path>` runs through the write path, and
+`verified` is true when `managed` now lists the path and `chezmoi verify
+<path>` exits 0. If `managed` doesn't list it, the error is `chezmoi added
+nothing`, exit 1.
+
+The diff is masked whole for `--encrypt` and when the path, or any regular
+file under a directory path, matches `always_mask`, unless `--reveal`.
+Output follows `edit`'s: result lines `added ~/.foo → a1b2c3d "Add .foo"
+(pushed)` and `would add ~/.foo (dry run)`. `--json` output: `{target,
+source, template, encrypted, diff, commit, pushed, verified}`, where
+`template` and `encrypted` are the flags given and `source` is `null` on a
+dry run.
 
 ### Skill
 
