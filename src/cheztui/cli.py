@@ -148,6 +148,11 @@ async def _read(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "_editor":
+        from cheztui.edit import editor_main
+
+        return editor_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is not None:
