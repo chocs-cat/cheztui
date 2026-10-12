@@ -694,7 +694,8 @@ It runs the skill's whole procedure as one command, refusing at the first
 step that fails:
 
 1. **Managed?** `chezmoi managed --format=json --path-style=all <target>`.
-   Not managed → exit 1 with a message pointing at `cheztui add`. The same
+   Not managed (no entry whose absolute path is the target) → exit 1 with a
+   message pointing at `cheztui add`. The same
    read with `--include=files`, `templates`, `encrypted` and `externals`
    gives the entry's kind and attributes (DEC-15). An external, or a target
    that isn't a regular file (a directory, symlink or script), is refused:
@@ -722,7 +723,10 @@ step that fails:
    `--reveal` is passed (DEC-17).
 7. **Write** by running `chezmoi edit --apply --hardlink=false [--force]
    <target>` with cheztui itself as `$EDITOR` and `$VISUAL` (an internal
-   `cheztui _editor` entry point that writes in place, never renames). The
+   `cheztui _editor` entry point that writes in place, never renames; the
+   value is the running interpreter's `python -m cheztui _editor`,
+   shell-quoted, which chezmoi splits as a shell would, so PATH doesn't
+   matter). The
    ops spec and the expected result's sha256 reach `_editor` in a 0600
    temporary file named by `CHEZTUI_EDIT_SPEC`, deleted afterwards.
    `_editor` re-applies the spec to the file chezmoi hands it and writes
