@@ -218,11 +218,11 @@ def test_global_flags_after_the_command_are_a_usage_error(args, capsys):
 
 
 def test_help_lists_only_the_built_commands(capsys):
-    # The write path has no command of its own yet (spec §7, §12).
+    # The command list grows only as commands ship (spec §7, §12).
     with pytest.raises(SystemExit):
         main(["--help"])
     lines = capsys.readouterr().out.splitlines()
     commands = [
         line.split()[0] for line in lines if line[:5].isspace() is False and line[:4] == "    "
     ]
-    assert commands == ["status", "verify"]
+    assert commands == ["status", "verify", "edit"]

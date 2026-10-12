@@ -3,6 +3,7 @@
     cheztui                     the TUI (on a terminal), else help
     cheztui status [--json]     drift rows with direction and default fix
     cheztui verify [--json]     pass/fail and the failing targets
+    cheztui edit TARGET --ops FILE|- [--dry-run] [--allow-drift] [--reveal] [--json]
 
 Global flags go before the command: -n/--dry-run, --chezmoi-config PATH,
 --source PATH, --destination PATH (DEC-19).
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from cheztui import __version__, config, ops
 from cheztui.chezmoi import Chezmoi, ChezmoiError, ChezmoiFailed
+from cheztui.edit import SpecError, parse_spec
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_CHEZMOI = 0, 1, 2, 3
 
@@ -46,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         sub = commands.add_parser(name, help=help_text, description=help_text.capitalize() + ".")
         sub.add_argument("--json", action="store_true", help="print JSON on stdout")
+    edit = commands.add_parser("edit", help="scripted edit of one managed file")
+    edit.add_argument("target", type=Path)
+    edit.add_argument("--ops", required=True, metavar="FILE|-", help="JSON ops spec, or stdin")
+    edit.add_argument("--dry-run", dest="command_dry_run", action="store_true")
+    edit.add_argument("--allow-drift", action="store_true")
+    edit.add_argument("--reveal", action="store_true")
+    edit.add_argument("--json", action="store_true", help="print JSON on stdout")
     return p
 
 
@@ -147,6 +156,108 @@ async def _read(args: argparse.Namespace) -> int:
     return _COMMANDS[args.command](drift, args.json)
 
 
+def _refusal(result: ops.Refusal, as_json: bool) -> int:
+    if as_json:
+        payload: dict[str, object] = {"error": result.message}
+        if result.stray:
+            payload["stray"] = list(result.stray)
+        print(json.dumps(payload, indent=2))
+    else:
+        _error(result.message)
+        for path in result.stray:
+            print(f"  {path}", file=sys.stderr)
+    return EXIT_FAILED
+
+
+def _script_output(result: ops.ScriptResult | ops.Refusal, as_json: bool, action: str) -> int:
+    if isinstance(result, ops.Refusal):
+        return _refusal(result, as_json)
+    name = _display(result.target, Path.home())
+    if result.template and action == "edit":
+        print(
+            f"note: {name} is a template; the applied result differs from the edit", file=sys.stderr
+        )
+    if result.warning:
+        print("warning: uncommitted files in the source tree:", file=sys.stderr)
+        for path in result.warning:
+            print(f"  {path}", file=sys.stderr)
+    if as_json:
+        payload: dict[str, object] = {
+            "target": str(result.target),
+            "source": str(result.source) if result.source is not None else None,
+            "template": result.template,
+            "encrypted": result.encrypted,
+            "diff": result.diff,
+            "commit": {"sha": result.commit.sha, "subject": result.commit.subject}
+            if result.commit is not None
+            else None,
+            "pushed": result.pushed,
+            "verified": result.verified,
+        }
+        if action == "edit":
+            payload["skipped"] = result.skipped
+        if result.error is not None:
+            payload["error"] = result.error
+        print(json.dumps(payload, indent=2))
+    else:
+        if result.diff:
+            print(result.diff, end="")
+        if result.error is not None:
+            if result.stderr:
+                print(
+                    result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n"
+                )
+            _error(result.error)
+        elif result.skipped:
+            print(f"skipped {name}: already contains {result.skip_text!r}, leaving unchanged")
+        elif result.dry_run:
+            print(f"would {action} {name} (dry run)")
+        elif result.commit is not None:
+            pushed = "pushed" if result.pushed else "not pushed"
+            verb = "edited" if action == "edit" else "added"
+            print(f'{verb} {name} → {result.commit.sha[:7]} "{result.commit.subject}" ({pushed})')
+        else:
+            verb = "edited" if action == "edit" else "added"
+            print(f"{verb} {name} ({result.state})")
+    return EXIT_FAILED if result.error is not None or result.verified is False else EXIT_OK
+
+
+async def _write(args: argparse.Namespace) -> int:
+    # Read and parse the spec before config, version checks or any chezmoi call (§8).
+    try:
+        raw = sys.stdin.read() if args.ops == "-" else Path(args.ops).read_bytes().decode("utf-8")
+        spec = parse_spec(raw)
+    except (OSError, UnicodeError, SpecError) as e:
+        return _refusal(ops.Refusal(str(e)), args.json)
+    try:
+        settings = config.load()
+    except config.ConfigError as e:
+        _error(str(e))
+        return EXIT_USAGE
+    chezmoi = Chezmoi(
+        config=args.chezmoi_config,
+        source=args.source,
+        destination=args.destination,
+        dry_run=args.dry_run,
+    )
+    try:
+        await chezmoi.check_version()
+        result = await ops.WriteOps(chezmoi, settings).edit(
+            args.target,
+            spec,
+            dry_run=args.command_dry_run,
+            allow_drift=args.allow_drift,
+            reveal=args.reveal,
+        )
+    except ChezmoiFailed as e:
+        _error(f"chezmoi exited {e.returncode}" + (f": {e.last_line}" if e.last_line else ""))
+        return EXIT_CHEZMOI
+    except ChezmoiError as e:
+        _error(str(e))
+        return EXIT_CHEZMOI
+    return _script_output(result, args.json, args.command)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "_editor":
@@ -155,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
         return editor_main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "edit":
+        return asyncio.run(_write(args))
     if args.command is not None:
         return asyncio.run(_read(args))
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
