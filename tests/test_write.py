@@ -1304,7 +1304,19 @@ async def test_mixed_defaults_run_merge_last_with_a_fresh_preflight(home: Path):
     on_write(fake, "apply", commit="Apply")
     terminal = Terminal(fake, commit="Merge")
     mark = len(fake.log)
-    result = await ops.execute(plan, confirmed=True, interactive_runner=terminal)
+    result = await ops.execute(
+        plan, confirmed=True, interactive_runner=terminal, interactive_env={"EDITOR": "X"}
+    )
+    assert [
+        env
+        for call, env in zip(
+            [c for c in fake.log if c[0] == "chezmoi" and subcommand(c)[0] != "merge"],
+            fake.envs,
+            strict=True,
+        )
+        if subcommand(call)[0] == "apply"
+    ] == [None, None]
+    assert terminal.calls[-1][1] == {"EDITOR": "X"}
     assert [(r.command.action, r.outcome) for r in result.results] == [
         ("apply", "ok"),
         ("merge", "ok"),

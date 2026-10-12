@@ -46,14 +46,19 @@ DEC-27 to DEC-30), one instance per front end:
   runs it once, and reports the commit from `HEAD` before and after, the
   push state, and masked output, stopping at the first failure. A plan
   only describes a write; executing it always checks again.
+- Scripted `edit` and `add` (§8) build one-entry plans and execute through
+  the same path, with verification afterwards. Scripted edits use the
+  internal `_editor`, a 0600 temporary spec and an expected-result hash
+  (DEC-18, DEC-31).
+- Each `WriteCommand.env` reaches only its command.
 - Interactive writes (edit, merge) take a front end's runner
   (`interactive_runner`, plus `interactive_env`); `chezmoi.py` still builds
   the argv, and `ops` still owns the pre-flight and the result. In dry-run
   mode they never start.
 
 Plans and results hold masked text only: raw chezmoi output stays inside
-the write path. The CLI commands and TUI views that drive writes aren't
-built yet; tests drive `WriteOps` directly, with `tests/fake_write.py` for
+the write path. The scripted CLI commands drive `WriteOps`; the TUI views arrive later.
+Tests also drive `WriteOps` directly, with `tests/fake_write.py` for
 fakes and the scratch setup for the real binary.
 
 Tests never touch your real chezmoi source or home directory: they build

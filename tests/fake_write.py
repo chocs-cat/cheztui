@@ -22,7 +22,9 @@ H = Path("/h")  # destination
 S = Path("/s")  # source dir and working tree
 
 # chezmoi's read-only commands; anything else counts as a write.
-READS = frozenset({"dump-config", "managed", "execute-template", "status", "dump", "cat"})
+READS = frozenset(
+    {"dump-config", "managed", "execute-template", "status", "dump", "cat", "decrypt", "verify"}
+)
 
 _VALUE_FLAGS = frozenset({"--config", "--source", "--destination"})
 

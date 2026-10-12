@@ -102,6 +102,7 @@ class ChezmoiConfig:
     dest_dir: Path
     auto_commit: bool  # chezmoi commits writes: git.autocommit or git.autopush (DEC-23)
     auto_push: bool
+    edit_command: str = ""
 
 
 def parse_status(text: str) -> list[StatusRow]:
@@ -228,6 +229,7 @@ def parse_dump_config(text: str) -> ChezmoiConfig:
         dest_dir=Path(f.text("destDir")),
         auto_commit=git.flag("autocommit") or auto_push,  # DEC-23
         auto_push=auto_push,
+        edit_command=_Fields(f.data.get("edit", {}), command, "edit").opt_text("command") or "",
     )
 
 
@@ -319,11 +321,13 @@ class Chezmoi:
     async def status(self, targets: Sequence[str | Path] = ()) -> list[StatusRow]:
         return parse_status(await self._text("status", "--path-style=absolute", *map(str, targets)))
 
-    async def managed(self, include: Sequence[str] = ()) -> dict[str, ManagedEntry]:
+    async def managed(
+        self, include: Sequence[str] = (), targets: Sequence[str | Path] = ()
+    ) -> dict[str, ManagedEntry]:
         args = ["managed", "--format=json", "--path-style=all"]
         if include:
             args.append(f"--include={','.join(include)}")
-        return parse_managed(await self._text(*args))
+        return parse_managed(await self._text(*args, *map(str, targets)))
 
     async def dump(self, targets: Sequence[str | Path] = ()) -> dict[str, DumpEntry]:
         return parse_dump(await self._text("dump", "--format=json", *map(str, targets)))
@@ -345,10 +349,18 @@ class Chezmoi:
         only the one-action template around it. For password-manager call
         detection: keep the text transient.
         """
+        return (await self.source_bytes(source)).decode("utf-8", errors="replace")
+
+    async def source_bytes(self, source: Path) -> bytes:
+        """Literal source bytes, preserving UTF-8 and line endings (spec §8, DEC-31)."""
         template = "{{ include " + go_quote(source) + " }}"
-        return (await self.run("execute-template", template)).stdout.decode(
-            "utf-8", errors="replace"
-        )
+        return (await self.run("execute-template", template)).stdout
+
+    async def decrypt(self, source: Path) -> bytes:
+        return (await self.run("decrypt", str(source))).stdout
+
+    async def verify(self, target: Path) -> bool:
+        return (await self.run("verify", str(target), check=False)).returncode == 0
 
 
 def go_quote(path: Path) -> str:

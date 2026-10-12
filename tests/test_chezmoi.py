@@ -165,3 +165,32 @@ async def test_run_with_an_injected_runner_and_env():
     assert default.calls == []
     assert injected.calls == [("chezmoi", "--no-tty", "--source", "/s", "merge", "/h/a")]
     assert envs == [{"EDITOR": "x"}]
+
+
+async def test_exact_source_bytes_and_decrypt():
+    runner = FakeRunner(stdout=b"a\r\n\xff")
+    cz = Chezmoi(runner)
+    assert await cz.source_bytes(Path("/s/a")) == b"a\r\n\xff"
+    assert await cz.decrypt(Path("/s/a")) == b"a\r\n\xff"
+    assert runner.calls[-1] == ("chezmoi", "--no-tty", "decrypt", "/s/a")
+
+
+async def test_managed_scoped_targets_follow_flags():
+    runner = FakeRunner(stdout=b"{}")
+    await Chezmoi(runner).managed(["files"], [Path("/h/a")])
+    assert runner.calls == [
+        (
+            "chezmoi",
+            "--no-tty",
+            "managed",
+            "--format=json",
+            "--path-style=all",
+            "--include=files",
+            "/h/a",
+        )
+    ]
+
+
+@pytest.mark.parametrize("code", [0, 1, 127])
+async def test_target_verify_exit_is_boolean(code):
+    assert await Chezmoi(FakeRunner(returncode=code)).verify(Path("/h/a")) is (code == 0)

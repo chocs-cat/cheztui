@@ -984,7 +984,10 @@ src/cheztui/
   task is cancelled (DEC-6). `git.py` takes the same runner.
 - Interactive writes can take a front-end-supplied runner for terminal I/O;
   `ops.py` still owns the command, pre-flight and result, and `chezmoi.py`
-  invokes that runner with the usual full argv. The TUI supplies suspension,
+  invokes that runner with the usual full argv. Each command can carry its
+  own immutable environment overrides; interactive overrides apply only
+  to interactive commands and take precedence over those overrides.
+  The TUI supplies suspension,
   not a second write implementation. Write tasks protect the subprocess and
   result collection from the read runner's cancellation behavior (§5).
 - Every chezmoi call is `chezmoi --no-tty`, then `--config`, `--source`,

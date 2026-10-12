@@ -14,9 +14,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import os
 import shlex
 import stat
+import sys
+import tempfile
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -32,6 +35,7 @@ from cheztui.chezmoi import (
     StatusRow,
 )
 from cheztui.config import Config, SecretsConfig
+from cheztui.edit import Spec, SpecError, apply_spec, sha256, unified_diff
 from cheztui.git import Commit, Git, GitError, GitFailed
 from cheztui.runner import Runner, run_subprocess
 from cheztui.secrets import Masker, calls_secret_function
@@ -266,6 +270,7 @@ class Preflight:
     working_tree: Path
     auto_commit: bool  # git.autocommit or git.autopush (DEC-23)
     stray: tuple[str, ...]  # uncommitted paths, relative to the working tree
+    edit_command: str = ""
 
     @property
     def blocked(self) -> bool:
@@ -294,6 +299,7 @@ class WriteCommand:
     targets: tuple[Path, ...]
     argv: tuple[str, ...]  # the full argv, global flags included
     interactive: bool
+    env: tuple[tuple[str, str], ...] = ()
 
     @property
     def display(self) -> str:
@@ -436,6 +442,45 @@ async def sanitized(awaitable: Awaitable[_T], masker: Masker | None, *, whole: b
     raise error
 
 
+@dataclass(frozen=True)
+class Refusal:
+    message: str
+    stray: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScriptResult:
+    """Scripted edit/add output, with masked diff and diagnostics (spec §8)."""
+
+    target: Path
+    source: Path | None
+    template: bool
+    encrypted: bool
+    diff: str = ""
+    skipped: bool = False
+    skip_text: str | None = None
+    dry_run: bool = False
+    commit: Commit | None = None
+    pushed: bool | None = None
+    verified: bool | None = None
+    state: CommitState | None = None
+    warning: tuple[str, ...] = ()
+    stderr: str = ""
+    error: str | None = None
+
+
+def normalize_target(target: str | Path) -> Path:
+    """Absolute with ~ expanded, without following symlinks (spec §8)."""
+    return Path(os.path.abspath(Path(target).expanduser()))  # noqa: PTH100 (keep symlinks)
+
+
+def display_target(target: Path) -> str:
+    home = Path.home()
+    if target.is_relative_to(home):
+        return "~" if target == home else f"~/{target.relative_to(home)}"
+    return str(target)
+
+
 class WriteOps:
     """The one write path (DEC-8): pre-flight, prepare, execute.
 
@@ -474,6 +519,164 @@ class WriteOps:
             working_tree=config.working_tree,
             auto_commit=config.auto_commit,
             stray=tuple(stray),
+            edit_command=config.edit_command,
+        )
+
+    # --- Scripted edit (spec §8; DEC-11, DEC-18, DEC-31) -------------------
+
+    async def edit(
+        self,
+        target: str | Path,
+        spec: Spec,
+        *,
+        dry_run: bool = False,
+        allow_drift: bool = False,
+        reveal: bool = False,
+    ) -> ScriptResult | Refusal:
+        target = normalize_target(target)
+        name = display_target(target)
+        async with self._lock:
+            managed = await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
+            entry = next((e for e in managed.values() if e.absolute == target), None)
+            if entry is None:
+                return Refusal(f"{name} isn't managed by chezmoi; use cheztui add to add it")
+            files, templates, encrypted, externals = await asyncio.gather(
+                *(
+                    sanitized(self.chezmoi.managed([kind], [target]), None, whole=True)
+                    for kind in ("files", "templates", "encrypted", "externals")
+                )
+            )
+            if any(e.absolute == target for e in externals.values()):
+                return Refusal(f"{name} is an external; edit its .chezmoiexternal entry instead")
+            if not any(e.absolute == target for e in files.values()):
+                return Refusal(f"{name} isn't a regular file; cheztui edit edits one file's text")
+            is_template = any(e.absolute == target for e in templates.values())
+            is_encrypted = any(e.absolute == target for e in encrypted.values())
+            status = await sanitized(self.chezmoi.status([target]), None, whole=True)
+            if status and not allow_drift:
+                return Refusal(
+                    f"{name} has drifted ({status[0].columns}); applying would overwrite it. "
+                    "Resolve it first, or pass --allow-drift"
+                )
+            pf = await self._script_preflight()
+            if isinstance(pf, Refusal):
+                return pf
+            if pf.edit_command:
+                return Refusal(
+                    f"chezmoi's edit.command is set ({pf.edit_command}), so chezmoi won't run "
+                    "cheztui's editor; unset it to use cheztui edit"
+                )
+            if pf.blocked:
+                return Refusal("the source tree has uncommitted changes", pf.stray)
+            source = entry.source_absolute
+            if source is None:
+                return Refusal(f"{name} has no source file")
+            raw = await self._edit_bytes(source, is_encrypted)
+            try:
+                original = raw.decode("utf-8")
+            except UnicodeError:
+                return Refusal(f"{name} isn't UTF-8 text")
+            try:
+                new = apply_spec(spec, original, name)
+            except SpecError as e:
+                return Refusal(str(e))
+            result = ScriptResult(
+                target,
+                source,
+                is_template,
+                is_encrypted,
+                skipped=new is None,
+                skip_text=spec.skip_if_contains,
+                dry_run=dry_run or self.chezmoi.dry_run,
+                warning=pf.stray if pf.warns else (),
+            )
+            if new is None:
+                return result
+            masker = self.masker(pf)
+            diff = unified_diff(original, new, str(target.relative_to(pf.dest_dir)))
+            whole = is_encrypted or masker.masks_whole(target)
+            diff = (
+                masker.mask(diff, target, diff=True, whole=True).text
+                if whole and not reveal
+                else diff
+            )
+            result = replace(result, diff=diff)
+            if result.dry_run:
+                return result
+            tags = tuple(t for t, yes in (("tmpl", is_template), ("enc", is_encrypted)) if yes)
+            write_entry = await self._masking(
+                WriteEntry(target, source, "edit", True), tags, masker
+            )
+            prefix = tuple(self.chezmoi.argv())
+            expected = sha256(new)
+        # execute takes the same lock and rechecks pre-flight (DEC-27).
+        fd, temp_name = tempfile.mkstemp(prefix="cheztui-edit-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"spec": spec.raw, "sha256": expected}, f)
+            editor = shlex.join([sys.executable, "-m", "cheztui", "_editor"])
+            args = (
+                "edit",
+                "--apply",
+                "--hardlink=false",
+                *(("--force",) if allow_drift else ()),
+                str(target),
+            )
+            command = WriteCommand(
+                "edit",
+                (target,),
+                (*prefix, *args),
+                False,
+                (("EDITOR", editor), ("VISUAL", editor), ("CHEZTUI_EDIT_SPEC", temp_name)),
+            )
+            plan = WritePlan(pf, (write_entry,), (command,), prefix=prefix)
+            outcome = await self.execute(plan, confirmed=True)
+        finally:
+            Path(temp_name).unlink(missing_ok=True)
+        result_or_refusal = self._script_result(result, outcome)
+        if isinstance(result_or_refusal, Refusal) or result_or_refusal.error is not None:
+            return result_or_refusal
+        actual, verified = await asyncio.gather(
+            self._edit_bytes(source, is_encrypted), self.chezmoi.verify(target)
+        )
+        verified = verified and hashlib.sha256(actual).hexdigest() == expected
+        return replace(
+            result_or_refusal,
+            verified=verified,
+            error=None if verified else f"{name} doesn't verify after the edit",
+        )
+
+    async def _script_preflight(self) -> Preflight | Refusal:
+        try:
+            return await self.preflight()
+        except GitError as e:
+            return Refusal(f"pre-flight failed: {e}")
+
+    async def _edit_bytes(self, source: Path, encrypted: bool) -> bytes:
+        return await sanitized(
+            self.chezmoi.decrypt(source) if encrypted else self.chezmoi.source_bytes(source),
+            None,
+            whole=True,
+        )
+
+    def _script_result(self, result: ScriptResult, outcome: WriteResult) -> ScriptResult | Refusal:
+        if outcome.refused:
+            return Refusal(outcome.refused)
+        (done,) = outcome.results
+        if done.outcome == "refused":
+            return Refusal(done.error or "write refused", done.stray)
+        error = done.error
+        if done.reporting_error is not None:
+            error = f"the command ran but reporting failed: {done.reporting_error}"
+        return replace(
+            result,
+            commit=done.commit,
+            pushed=done.pushed,
+            state=done.state,
+            warning=outcome.warning or result.warning,
+            stderr=done.stderr,
+            error=error,
+            verified=False if error is not None else None,
         )
 
     # --- Preparation (spec §5 Drift command plans; DEC-16, DEC-28) ---------
@@ -693,7 +896,10 @@ class WriteOps:
                     results.append(CommandResult(command, "dry run", state="dry run"))
                     continue
                 runner = interactive_runner if command.interactive else None
-                result = await self._run(plan, command, pf, runner, interactive_env)
+                env = dict(command.env)
+                if command.interactive and interactive_env is not None:
+                    env.update(interactive_env)
+                result = await self._run(plan, command, pf, runner, env or None)
                 results.append(result)
                 if result.outcome == "failed" or result.reporting_error is not None:
                     return _result(results, commands[i + 1 :], warning, self.chezmoi.dry_run)
@@ -739,15 +945,22 @@ class WriteOps:
         else:
             stderr = _decode(done.stderr)
             failed = done.returncode != 0
+            error = short_error(stderr, command.action, done.returncode)
+            if command.action == "edit" and not command.interactive:
+                editor_errors = [
+                    s.strip()
+                    for s in stderr.splitlines()
+                    if s.strip().startswith("cheztui _editor:")
+                ]
+                if editor_errors:
+                    error = editor_errors[-1]
             result = CommandResult(
                 command,
                 "failed" if failed else "dry run" if self.chezmoi.dry_run else "ok",
                 returncode=done.returncode,
                 stdout=mask(_decode(done.stdout)),
                 stderr=mask(stderr),
-                error=mask(short_error(stderr, command.action, done.returncode))
-                if failed
-                else None,
+                error=mask(error) if failed else None,
             )
             del done, stderr  # raw output stays transient (DEC-30)
         return await self._collect(result, git, before, mask)
