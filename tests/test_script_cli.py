@@ -106,16 +106,23 @@ def test_template_note_and_stdin(scratch, capsys, monkeypatch, as_json):
 
 @requires_chezmoi
 @pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize("dirty", [False, True])
-def test_refusals(scratch, capsys, as_json, dirty):
+@pytest.mark.parametrize("case", ["dirty", "unmanaged", "outside"])
+def test_refusals(scratch, capsys, as_json, case):
     target = setup_file(scratch)
     scratch.set_auto_commit(True)
+    head = scratch.git("rev-parse", "HEAD").stdout
+    dirty = case == "dirty"
     if dirty:
         (scratch.source / "stray").write_text("stray")
         error = "the source tree has uncommitted changes"
-    else:
+    elif case == "unmanaged":
         target = scratch.home / "unmanaged"
         error = "~/unmanaged isn't managed by chezmoi; use cheztui add to add it"
+    else:
+        # Outside the destination is not managed, not a chezmoi failure (DEC-32).
+        target = scratch.root / "outside"
+        target.write_text("old")
+        error = f"{target} isn't managed by chezmoi; use cheztui add to add it"
     assert (
         invoke(
             scratch, "edit", target, "--ops", spec_file(scratch), *(["--json"] if as_json else [])
@@ -129,6 +136,7 @@ def test_refusals(scratch, capsys, as_json, dirty):
     else:
         assert out == ""
         assert err == f"cheztui: {error}\n" + ("  stray\n" if dirty else "")
+    assert scratch.git("rev-parse", "HEAD").stdout == head
 
 
 @pytest.mark.parametrize("case", ["missing", "invalid", "utf8"])

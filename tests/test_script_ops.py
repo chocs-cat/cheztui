@@ -111,12 +111,17 @@ async def test_template_and_crlf(scratch):
 
 @requires_chezmoi
 @pytest.mark.parametrize(
-    "case", ["unmanaged", "dir", "symlink", "script", "dirty", "drift", "editor", "utf8"]
+    "case",
+    ["unmanaged", "outside", "dir", "symlink", "script", "dirty", "drift", "editor", "utf8"],
 )
 async def test_edit_refusals_unchanged(scratch, case):
     target = setup_file(scratch)
     if case == "unmanaged":
         target = scratch.home / "unmanaged"
+        target.write_text("old")
+    elif case == "outside":
+        # managed rejects a path outside the destination (DEC-32).
+        target = scratch.root / "outside"
         target.write_text("old")
     elif case == "dir":
         target = scratch.home / "dir"
@@ -151,6 +156,7 @@ async def test_edit_refusals_unchanged(scratch, case):
     assert isinstance(result, Refusal), result
     messages = {
         "unmanaged": "isn't managed",
+        "outside": f"{target} isn't managed by chezmoi; use cheztui add to add it",
         "dir": "isn't a regular file",
         "symlink": "isn't a regular file",
         "script": "isn't a regular file",
@@ -544,13 +550,15 @@ async def test_add_nothing_after_a_successful_command():
     assert len(fake.writes) == 2
 
 
-async def test_inside_destination_managed_failure_propagates():
+@pytest.mark.parametrize("command", ["add", "edit"])
+async def test_inside_destination_managed_failure_propagates(command):
     from cheztui.chezmoi import ChezmoiFailed
 
     fake = FakeWrite()
     fake.fail("managed", b"password = secret\n")
+    ops = fake.ops()
     with pytest.raises(ChezmoiFailed) as e:
-        await fake.ops().add("/h/new")
+        await (ops.add("/h/new") if command == "add" else ops.edit("/h/new", SPEC))
     assert "secret" not in e.value.stderr
     assert fake.writes == []
 

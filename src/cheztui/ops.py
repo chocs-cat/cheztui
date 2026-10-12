@@ -537,7 +537,7 @@ class WriteOps:
         target = normalize_target(target)
         name = display_target(target)
         async with self._lock:
-            managed = await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
+            managed = await self._managed_at(target)
             entry = next((e for e in managed.values() if e.absolute == target), None)
             if entry is None:
                 return Refusal(f"{name} isn't managed by chezmoi; use cheztui add to add it")
@@ -648,6 +648,21 @@ class WriteOps:
             error=None if verified else f"{name} doesn't verify after the edit",
         )
 
+    async def _managed_at(self, target: Path) -> dict[str, ManagedEntry]:
+        """chezmoi's managed entries at `target`, none when it is outside the destination.
+
+        managed rejects an outside-destination argument; only that rejection
+        reads as not managed, decided by the effective destination. Inside it,
+        the failure propagates (§8 step 1, DEC-32).
+        """
+        try:
+            return await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
+        except ChezmoiFailed:
+            cfg = await sanitized(self.chezmoi.dump_config(), None, whole=True)
+            if target.is_relative_to(cfg.dest_dir):
+                raise
+            return {}
+
     async def _script_preflight(self) -> Preflight | Refusal:
         try:
             return await self.preflight()
@@ -695,15 +710,8 @@ class WriteOps:
         target = normalize_target(target)
         name = display_target(target)
         async with self._lock:
-            try:
-                managed = await sanitized(self.chezmoi.managed(targets=[target]), None, whole=True)
-            except ChezmoiFailed:
-                # managed rejects outside-destination arguments before the add preview.
-                # Only that path rejection proceeds to the dry-run refusal (§8, DEC-32).
-                cfg = await sanitized(self.chezmoi.dump_config(), None, whole=True)
-                if target.is_relative_to(cfg.dest_dir):
-                    raise
-                managed = {}
+            # Outside the destination, the add dry run gives the refusal (§8, DEC-32).
+            managed = await self._managed_at(target)
             if managed:
                 if any(
                     e.absolute != target and e.absolute.is_relative_to(target)
