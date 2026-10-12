@@ -531,4 +531,9 @@ the TUI; Help, palette, session log) and §9.
 - An unknown `ui.theme` is a config error at launch (exit 2, §9), checked
   before the TUI starts.
 
+*Amended 2026-10 (#29):* a read that succeeds empties the log line and adds
+no session-log entry. The log line reports what needs attention; an earlier
+read error left under a header that just loaded would contradict it, and a
+log entry per refresh would bury the errors.
+
 *Where:* `docs/spec.md` §4, §5, §7, §9.

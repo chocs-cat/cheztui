@@ -8,6 +8,7 @@ scratch setup and the real binaries.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -38,7 +39,11 @@ def subcommand(argv: Sequence[str]) -> tuple[str, ...]:
 
 
 def is_write(call: tuple[str, ...]) -> bool:
-    return call[0] == "chezmoi" and subcommand(call)[0] not in READS
+    if call[0] != "chezmoi":
+        return False
+    words = subcommand(call)
+    # `--version` has no subcommand; `state dump` reads where `state delete` writes.
+    return bool(words) and words[0] not in READS and words[:2] != ("state", "dump")
 
 
 Reply = Callable[[tuple[str, ...], Mapping[str, str] | None], Completed | None]
@@ -57,15 +62,37 @@ class FakeWrite:
     log: list[tuple[str, ...]] = field(default_factory=list)
     envs: list[Mapping[str, str] | None] = field(default_factory=list)
     replies: list[Reply] = field(default_factory=list)  # tried first, newest first
+    holds: dict[str, asyncio.Event] = field(default_factory=dict)
 
     def reply(self, reply: Reply) -> None:
         self.replies.insert(0, reply)
 
-    def fail(self, command: str, stderr: bytes, returncode: int = 1) -> None:
-        """Make every chezmoi `command` (or git subcommand) exit non-zero."""
+    def hold(self, command: str) -> asyncio.Event:
+        """Make every chezmoi `command` (or git subcommand) wait for the returned event.
+
+        The call is logged when it starts; `--version` names the version check.
+        """
+        event = self.holds[command] = asyncio.Event()
+        return event
+
+    async def _wait(self, call: tuple[str, ...]) -> None:
+        # `chezmoi --version` has no subcommand; git's follows `-C <work tree>`.
+        words = (subcommand(call) or call[1:2]) if call[0] == "chezmoi" else call[3:]
+        if words and words[0] in self.holds:
+            await self.holds[words[0]].wait()
+
+    def fail(
+        self, command: str, stderr: bytes, returncode: int = 1, *, binary: str | None = None
+    ) -> None:
+        """Make every chezmoi `command` (or git subcommand) exit non-zero.
+
+        `binary` (`chezmoi` or `git`) limits it to one, where both have the command.
+        """
 
         def reply(argv: tuple[str, ...], env: Mapping[str, str] | None) -> Completed | None:
             words = subcommand(argv) if argv[0] == "chezmoi" else argv[3:]
+            if binary not in (None, argv[0]):
+                return None
             if words and words[0] == command:
                 return Completed(argv, returncode, b"", stderr)
             return None
@@ -88,11 +115,16 @@ class FakeWrite:
         call = tuple(argv)
         self.log.append(call)
         self.envs.append(env)
+        await self._wait(call)
         for reply in self.replies:
             done = reply(call, env)
             if done is not None:
                 return done
-        if subcommand(call)[0] == "dump-config":
+        return self.chezmoi_default(call)
+
+    def chezmoi_default(self, call: tuple[str, ...]) -> Completed:
+        """The answer when no reply claims a chezmoi call; subclasses add commands."""
+        if subcommand(call)[:1] == ("dump-config",):
             config = {
                 "sourceDir": str(self.source),
                 "workingTree": str(self.work_tree),
@@ -112,10 +144,15 @@ class FakeWrite:
     ) -> Completed:
         call = tuple(argv)
         self.log.append(call)
+        await self._wait(call)
         for reply in self.replies:
             done = reply(call, env)
             if done is not None:
                 return done
+        return self.git_default(call)
+
+    def git_default(self, call: tuple[str, ...]) -> Completed:
+        """The answer when no reply claims a git call; subclasses add commands."""
         args = call[3:]  # git -C <work tree> ...
         ok = Completed(call, 0, b"", b"")
         match args:

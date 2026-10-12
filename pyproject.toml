@@ -45,6 +45,7 @@ include = ["src", "tests", "skills", "README.md", "CHANGELOG.md", "LICENSE"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pytest-textual-snapshot>=1.0.0",
     "ruff>=0.6",
     "ty==0.0.84",
 ]

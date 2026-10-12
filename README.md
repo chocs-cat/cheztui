@@ -13,14 +13,17 @@ chezmoi made. A `--json` CLI covers the same ground for scripts and coding
 agents, including `cheztui edit` for safe scripted edits to managed files.
 
 **Status:** early. The read commands `cheztui status` and `cheztui verify`
-work, as do `cheztui edit` and `cheztui add` for scripted writes; the TUI
-is still a placeholder. The design is in
+work, as do `cheztui edit` and `cheztui add` for scripted writes. `cheztui`
+opens the TUI's frame and its Drift list, with filter, selection, help, a
+command palette, the session log and settings; its fixes (apply, re-add,
+merge and the rest) arrive with the rest of v0.1. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
 
 ## Usage
 
 ```sh
+cheztui                   # the TUI, on the Drift view (? for its keys)
 cheztui status            # what drifted, which side changed, and the fix
 cheztui status --json     # the same rows as JSON, for scripts and agents
 cheztui verify            # ✓ verify, or ✗ verify and the failing targets (exit 1)

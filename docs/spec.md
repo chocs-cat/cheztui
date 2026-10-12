@@ -138,16 +138,16 @@ stack detail under the list; `tab` toggles focus.
 - **Log line.** `reading chezmoi…` while a read runs; otherwise the last
   result, error or cancellation, empty at start. An error shows as
   `✗ <message>`, in the error colour, with the message the CLI would print
-  after `cheztui: ` (§7).
-- **List.** One row is current. `/` opens a one-line filter input under the
-  list that filters as you type: case-insensitive substring of the target
-  as displayed (`~/…`); `enter` returns to the list keeping the filter,
-  `esc` clears it. `space` marks the current row selected (a `●` before
-  it; unselected rows have a space there). Selection is a set of targets:
-  it survives filtering, and a refresh keeps the targets still listed.
-  Actions take the selected rows the filter shows. After a refresh the
-  current row stays on its target if listed, else at the same position,
-  clamped.
+  after `cheztui: ` (§7). A read that succeeds leaves it empty.
+- **List.** One row is current; moving stops at either end. `/` opens a
+  one-line filter input under the list that filters as you type:
+  case-insensitive substring of the target as displayed (`~/…`); `enter`
+  returns to the list keeping the filter, `esc` clears it. `space` marks
+  the current row selected (a `●` before it; unselected rows have a space
+  there). Selection is a set of targets: it survives filtering, and a
+  refresh keeps the targets still listed. Actions take the selected rows
+  the filter shows. After a refresh the current row stays on its target if
+  listed, else at the same position, clamped.
 
 ## 5. Global behaviour
 
@@ -192,7 +192,8 @@ it is never written to disk.
 
 - `?` opens help: the current view's keys under the view's name (all of
   them, including ones the current row can't use), then the global keys
-  under `Global` in the table's order, one `key  description` per line.
+  under `Global` in the table's order, then `esc` and `tab`, one
+  `key  description` per line, the keys padded to the widest in the section.
   Help, palette and key bar are generated from the same binding
   declarations. `esc`, `?` or `q` closes it.
 - `:` opens the command palette with only cheztui's entries: the current
@@ -202,7 +203,8 @@ it is never written to disk.
 - `l` opens the session log: entries oldest first, scrolled to the newest,
   each `HH:MM:SS  <log-line text>`; an error is followed by its whole
   masked diagnostic, indented two spaces. Every result, error and
-  cancellation is logged. `esc`, `l` or `q` closes it.
+  cancellation is logged; a read that succeeds is not an entry (DEC-33).
+  `esc`, `l` or `q` closes it.
 
 ### Write flow
 
@@ -1060,8 +1062,12 @@ src/cheztui/
   config.py       TOML load/save
   watch.py        filesystem watching (watchfiles)
   tui/
-    app.py        app, header, view tabs, log line, key bar
-    views/        drift.py files.py scripts.py data.py externals.py
+    app.py        app, header, view tabs, log line, key bar, reads
+    keys.py       the key declarations: bindings, key bar, help, palette
+    screens.py    help, command palette, session log
+    settings.py   the settings screen
+    views/        base.py (the list and detail panes, filter, selection)
+                  drift.py files.py scripts.py data.py externals.py
                   adopt.py secrets.py health.py repo.py preview.py
     widgets/      diff.py (highlighted unified diff), confirm.py (preview
                   modal), picker.py (flags/attributes), tree.py

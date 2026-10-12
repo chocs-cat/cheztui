@@ -1,4 +1,4 @@
-"""The command line and the placeholder app (spec §7; DEC-19, DEC-21, DEC-25).
+"""The command line and its TUI launch (spec §7; DEC-19, DEC-21, DEC-25, DEC-33).
 
 Every command that reaches chezmoi passes the scratch `--chezmoi-config`,
 `--source` and `--destination`.
@@ -10,9 +10,8 @@ import json
 from pathlib import Path
 
 import pytest
-from textual.widgets import Static
 
-from cheztui import __version__
+from cheztui import __version__, cli
 from cheztui.cli import main
 from cheztui.tui.app import CheztuiApp
 from tests.conftest import Scratch, requires_chezmoi
@@ -26,13 +25,80 @@ def test_version(capsys):
     assert capsys.readouterr().out == f"cheztui {__version__}\n"
 
 
-async def test_app_starts_and_quits():
-    app = CheztuiApp()
-    async with app.run_test() as pilot:
-        placeholder = app.query_one("#placeholder", Static)
-        assert __version__ in str(placeholder.content)
-        await pilot.press("q")
-    assert app.return_code == 0
+# --- No arguments: the TUI (spec §7) ---------------------------------------------------
+
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[CheztuiApp]:
+    """A terminal, a scratch config dir, and `run` capturing the app instead of running it."""
+    monkeypatch.setattr(cli, "_on_terminal", lambda: True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    apps: list[CheztuiApp] = []
+    monkeypatch.setattr(CheztuiApp, "run", lambda self: apps.append(self))
+    return apps
+
+
+def write_config(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "xdg" / "cheztui" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(text)
+    return path
+
+
+def test_no_arguments_runs_the_app_with_the_global_flags(terminal, tmp_path, capsys):
+    write_config(tmp_path, '[ui]\ntheme = "nord"\n')
+    argv = ["-n", "--chezmoi-config", "/c.toml", "--source", "/src", "--destination", "/dst"]
+    assert main(argv) == 0
+    [app] = terminal
+    chezmoi = app.chezmoi
+    assert (chezmoi.config, chezmoi.source, chezmoi.destination, chezmoi.dry_run) == (
+        Path("/c.toml"),
+        Path("/src"),
+        Path("/dst"),
+        True,
+    )
+    assert app.settings.ui.theme == "nord"
+    assert capsys.readouterr() == ("", "")
+
+
+def test_no_arguments_without_flags(terminal):
+    assert main([]) == 0
+    [app] = terminal
+    assert (app.chezmoi.config, app.chezmoi.source, app.chezmoi.dry_run) == (None, None, False)
+
+
+def test_a_config_error_never_starts_the_app(terminal, tmp_path, capsys, monkeypatch):
+    path = write_config(tmp_path, "[invalid")
+    built: list[object] = []
+    monkeypatch.setattr(CheztuiApp, "__init__", lambda self, *a, **k: built.append(a))
+    assert main([]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith(f"cheztui: {path}: not valid TOML")
+    assert built == []
+
+
+def test_an_unknown_theme_exits_2(terminal, tmp_path, capsys):
+    path = write_config(tmp_path, '[ui]\ntheme = "no-such-theme"\n')
+    assert main([]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"cheztui: {path}: ui.theme 'no-such-theme' is not a Textual theme\n",
+    )
+    assert terminal == []
+
+
+def test_a_bad_global_flag_exits_2(terminal, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["--no-such-flag"])
+    assert exc.value.code == 2
+    assert terminal == []
+
+
+def test_without_a_terminal_prints_help(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_on_terminal", lambda: False)
+    assert main([]) == 0
+    assert capsys.readouterr().out.startswith("usage: cheztui")
 
 
 def flags(s: Scratch) -> list[str]:

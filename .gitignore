@@ -13,3 +13,6 @@ htmlcov/
 # The relay workflow's local process files (status, chunk briefs, projects,
 # checklists). Never committed; see AGENTS.md, "Relay workflow".
 /.relay/
+
+# pytest-textual-snapshot's failure report
+snapshot_report.html

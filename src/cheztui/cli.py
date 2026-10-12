@@ -24,7 +24,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from cheztui import __version__, config, ops
-from cheztui.chezmoi import Chezmoi, ChezmoiError, ChezmoiFailed
+from cheztui.chezmoi import Chezmoi, ChezmoiError
 from cheztui.edit import SpecError, parse_spec
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_CHEZMOI = 0, 1, 2, 3
@@ -154,12 +154,9 @@ async def _read(args: argparse.Namespace) -> int:
     try:
         await chezmoi.check_version()
         drift = await ops.drift(chezmoi)
-    except ChezmoiFailed as e:
-        # The message ends with chezmoi's last error line (spec §7, DEC-25).
-        _error(f"chezmoi exited {e.returncode}" + (f": {e.last_line}" if e.last_line else ""))
-        return EXIT_CHEZMOI
     except ChezmoiError as e:
-        _error(str(e))
+        # The message ends with chezmoi's last error line (spec §7, DEC-25).
+        _error(ops.failure_message(e))
         return EXIT_CHEZMOI
     return _COMMANDS[args.command](drift, args.json)
 
@@ -272,11 +269,8 @@ async def _write(args: argparse.Namespace) -> int:
                 dry_run=args.command_dry_run,
                 reveal=args.reveal,
             )
-    except ChezmoiFailed as e:
-        _error(f"chezmoi exited {e.returncode}" + (f": {e.last_line}" if e.last_line else ""))
-        return EXIT_CHEZMOI
     except ChezmoiError as e:
-        _error(str(e))
+        _error(ops.failure_message(e))
         return EXIT_CHEZMOI
     return _script_output(result, args.json, args.command)
 
@@ -293,14 +287,37 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_write(args))
     if args.command is not None:
         return asyncio.run(_read(args))
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    if not _on_terminal():
         parser.print_help()
         return EXIT_OK
-    # Imported here so `--version` and help don't pay for loading Textual.
-    from cheztui.tui.app import CheztuiApp
+    return _tui(args)
 
+
+def _on_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _tui(args: argparse.Namespace) -> int:
+    """Load the config, check its theme, and run the TUI (spec §7, §9; DEC-33)."""
     try:
-        CheztuiApp().run()
+        settings = config.load()
+    except config.ConfigError as e:
+        _error(str(e))
+        return EXIT_USAGE
+    # Imported here so `--version` and help don't pay for loading Textual.
+    from cheztui.tui.app import THEMES, CheztuiApp
+
+    if settings.ui.theme not in THEMES:
+        _error(f"{settings.path}: ui.theme '{settings.ui.theme}' is not a Textual theme")
+        return EXIT_USAGE
+    chezmoi = Chezmoi(
+        config=args.chezmoi_config,
+        source=args.source,
+        destination=args.destination,
+        dry_run=args.dry_run,
+    )
+    try:
+        CheztuiApp(settings, chezmoi).run()
     except KeyboardInterrupt:
         return 130
     return EXIT_OK

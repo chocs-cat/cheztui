@@ -244,6 +244,31 @@ async def drift(chezmoi: Chezmoi) -> Drift:
     return build_drift(status, managed, templates, encrypted, externals, dump, entry_state, raw)
 
 
+# --- The header's read (spec §4 Frame details, DEC-33) -----------------------
+
+
+@dataclass(frozen=True)
+class RepoState:
+    source_dir: Path
+    branch: str | None  # None when HEAD is detached
+    ahead_behind: tuple[int, int] | None  # None with no upstream or before the first commit
+    uncommitted: int  # porcelain entries in the working tree
+
+
+async def repo_state(chezmoi: Chezmoi, *, git_runner: Runner = run_subprocess) -> RepoState:
+    """Read the header's source, branch, ahead/behind and cleanliness (spec §4).
+
+    `dump-config` first, then git in its `workingTree`, the three git reads
+    at once. Errors propagate unmasked, as `drift()`'s do; front ends mask them.
+    """
+    config = await chezmoi.dump_config()
+    git = Git(git_runner, work_tree=config.working_tree)
+    branch, ahead_behind, stray = await asyncio.gather(
+        git.branch(), git.ahead_behind(), git.porcelain()
+    )
+    return RepoState(config.source_dir, branch, ahead_behind, len(stray))
+
+
 # --- The write path (spec §5 Write flow; DEC-8, DEC-27 to DEC-30) ------------
 
 Action = Literal["apply", "re-add", "forget", "edit", "merge", "add"]
@@ -428,6 +453,22 @@ def short_error(stderr: str, action: str, returncode: int) -> str:
     """The original last stderr line, or `chezmoi <action> exited <code>` (spec §5)."""
     lines = [line for line in stderr.splitlines() if line.strip()]
     return lines[-1].strip() if lines else f"chezmoi {action} exited {returncode}"
+
+
+def failure_message(error: ChezmoiError | GitError) -> str:
+    """A failed read's one-line message (spec §4 Log line, §7).
+
+    The CLI prints it after `cheztui: `, the TUI's log line after `✗ `. A
+    failed command's message ends with its last stderr line.
+    """
+    if isinstance(error, ChezmoiFailed):
+        tool, last = "chezmoi", error.last_line
+    elif isinstance(error, GitFailed):
+        lines = [line for line in error.stderr.splitlines() if line.strip()]
+        tool, last = "git", lines[-1].strip() if lines else ""
+    else:
+        return str(error)
+    return f"{tool} exited {error.returncode}" + (f": {last}" if last else "")
 
 
 async def sanitized(awaitable: Awaitable[_T], masker: Masker | None, *, whole: bool) -> _T:

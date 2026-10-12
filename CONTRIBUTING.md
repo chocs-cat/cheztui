@@ -28,6 +28,13 @@ each depending only on the ones above it; they arrive with the milestones:
 
 The CLI and the TUI both go through `ops`, so put behaviour changes there.
 
+In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar) and
+its reads; `keys.py` declares every key once, and the Textual bindings, the
+key bar, help and the palette are all generated from it; `views/base.py` is
+the list and detail panes with the filter and the selection, which each view
+in `views/` fills (`drift.py` so far); `screens.py` holds help, the palette
+and the session log, and `settings.py` the settings screen.
+
 Every write goes through `ops.WriteOps` (spec §5 Write flow; DEC-8,
 DEC-27 to DEC-30), one instance per front end:
 
@@ -57,9 +64,20 @@ DEC-27 to DEC-30), one instance per front end:
   mode they never start.
 
 Plans and results hold masked text only: raw chezmoi output stays inside
-the write path. The scripted CLI commands drive `WriteOps`; the TUI views arrive later.
-Tests also drive `WriteOps` directly, with `tests/fake_write.py` for
-fakes and the scratch setup for the real binary.
+the write path. The scripted CLI commands drive `WriteOps`; the TUI's
+actions arrive with the rest of v0.1. Tests also drive `WriteOps` directly,
+with `tests/fake_write.py` for fakes and the scratch setup for the real
+binary.
+
+TUI tests run the app with `App.run_test()` on `tests/fake_chezmoi.py`,
+which extends the write path's fake to answer chezmoi's and git's reads
+from a canned state; its `drifted()` state replays the recorded fixtures.
+Snapshot tests (pytest-textual-snapshot) keep the expected screens as SVGs
+in `tests/__snapshots__/`. After a deliberate change to what a screen
+shows, rewrite them with `uv run pytest --snapshot-update` and review the
+changed SVGs in the pull request like code: open them in a browser, or
+`rsvg-convert -w 1400 x.svg -o x.png`. A failed run writes
+`snapshot_report.html` with the differences.
 
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and
