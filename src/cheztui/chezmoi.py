@@ -336,6 +336,13 @@ class Chezmoi:
         """The target state's contents as chezmoi would write them, bytes unchanged."""
         return (await self.run("cat", str(target))).stdout
 
+    async def diff(self, target: str | Path) -> str:
+        """chezmoi's built-in diff for one target, no pager or colour (spec §6 Drift, DEC-34)."""
+        done = await self.run(
+            "diff", "--no-pager", "--color=false", "--use-builtin-diff", str(target)
+        )
+        return done.stdout.decode("utf-8", errors="replace")
+
     async def entry_state(self) -> dict[Path, EntryState]:
         return parse_state_dump(await self._text("state", "dump", "--format=json"))
 

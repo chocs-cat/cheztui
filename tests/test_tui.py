@@ -121,7 +121,7 @@ async def test_before_the_first_read_finishes(tmp_path):
         release.set()
         await settled(pilot)
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
 
 
 # --- Tabs (DEC-20) ---------------------------------------------------------------
@@ -131,7 +131,7 @@ async def test_the_one_tab_counts_drift_rows(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert text(app, "#tabs").strip() == "1 Drift 5"
+        assert text(app, "#tabs").strip() == "1 Drift 6"
 
 
 async def test_the_tab_has_no_count_in_sync(tmp_path):
@@ -182,7 +182,7 @@ async def test_a_failed_git_read_blanks_the_header(tmp_path, command):
     async with app.run_test() as pilot:
         await settled(pilot)
         assert header(app) == ("cheztui", "✗ verify")
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
         assert text(app, "#log-line") == "✗ git exited 128: fatal: not a git repository"
 
 
@@ -273,10 +273,11 @@ async def test_g_rereads_both(tmp_path):
     app = make_app(fake, tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert (calls(fake, "status"), calls(fake, "dump-config")) == (1, 1)
+        # dump-config: the header's read, and the detail's destination (spec §6).
+        assert (calls(fake, "status"), calls(fake, "dump-config")) == (1, 2)
         await pilot.press("g")
         await settled(pilot)
-        assert (calls(fake, "status"), calls(fake, "dump-config")) == (2, 2)
+        assert (calls(fake, "status"), calls(fake, "dump-config")) == (2, 4)
         # The version check passed once and isn't repeated (DEC-21).
         assert fake.chezmoi_calls.count(()) == 1
 
@@ -300,6 +301,32 @@ async def test_esc_cancels_a_read_and_keeps_the_data(tmp_path):
         assert [e.text for e in app.session_log] == ["refresh cancelled"]
         release.set()
         await settled(pilot)
+        assert text(app, "#log-line") == "refresh cancelled"
+
+
+async def test_a_failure_shown_before_esc_is_logged(tmp_path):
+    # `status` fails while the header's read is held; `esc` cancels the read
+    # after the list shows the error, which is already in the log (#31).
+    fake = FakeChezmoi.drifted()
+    fake.fail("status", b"chezmoi: status broke\n", binary="chezmoi")
+    release = fake.hold("dump-config")
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        for _ in range(100):
+            if text(app, "#list-message"):
+                break
+            await pilot.pause()
+        assert listed(app) == ["✗ chezmoi exited 1: chezmoi: status broke"]
+        await pilot.press("escape")
+        await settled(pilot)
+        logged = [(e.text, e.diagnostic) for e in app.session_log]
+        assert logged == [
+            ("✗ chezmoi exited 1: chezmoi: status broke", "chezmoi: status broke"),
+            ("refresh cancelled", None),
+        ]
+        release.set()
+        await settled(pilot)
+        assert [(e.text, e.diagnostic) for e in app.session_log] == logged
         assert text(app, "#log-line") == "refresh cancelled"
 
 
@@ -329,7 +356,7 @@ async def test_g_during_a_read_cancels_it(tmp_path):
         await settled(pilot)
         assert calls(fake, "status") == 2
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
         assert app.session_log == []  # a superseded read isn't a cancellation
 
 
@@ -344,7 +371,7 @@ async def test_g_after_a_failed_version_check_retries_it(tmp_path):
         await settled(pilot)
         assert fake.chezmoi_calls.count(()) == 2
         assert text(app, "#log-line") == ""
-        assert len(listed(app)) == 5
+        assert len(listed(app)) == 6
 
 
 async def test_a_successful_read_clears_an_earlier_error(tmp_path):
@@ -358,7 +385,7 @@ async def test_a_successful_read_clears_an_earlier_error(tmp_path):
         await pilot.press("g")
         await settled(pilot)
         assert text(app, "#log-line") == ""
-        assert text(app, "#tabs").strip() == "1 Drift 5"
+        assert text(app, "#tabs").strip() == "1 Drift 6"
 
 
 async def test_q_quits(tmp_path):
@@ -370,21 +397,6 @@ async def test_q_quits(tmp_path):
 
 
 # --- Panes and layout ----------------------------------------------------------------
-
-
-async def test_detail_shows_target_and_source(tmp_path):
-    app = make_app(FakeChezmoi.drifted(), tmp_path)
-    async with app.run_test() as pilot:
-        await settled(pilot)
-        assert text(app, "#detail-body") == "~/.both file\n/scratch/source/dot_both file"
-
-
-async def test_detail_without_a_source(tmp_path):
-    fake = FakeChezmoi.drifted(status=" M /scratch/home/.unknown\n")
-    app = make_app(fake, tmp_path)
-    async with app.run_test() as pilot:
-        await settled(pilot)
-        assert text(app, "#detail-body") == "~/.unknown\n(no source)"
 
 
 def panes(app: CheztuiApp) -> tuple[str, bool]:

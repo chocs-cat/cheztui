@@ -1,0 +1,8 @@
+{
+  "/scratch/home/.both file": "diff --git a/.both file b/.both file\nindex 08ea899571c402193ffb4fad937572e7dd5483ec..08b5b10ff7ef72ddb064bdd18bd91f57f034b19e 100644\n--- a/.both file\n+++ b/.both file\n@@ -1,2 +1,2 @@\n both\n-edited in home\n+edited in source\n",
+  "/scratch/home/.gone": "diff --git a/.gone b/.gone\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..286c5f5776916d7d7d5849988ca9d83e722cf9c2\n--- /dev/null\n+++ b/.gone\n@@ -0,0 +1 @@\n+gone\n",
+  "/scratch/home/.mine": "diff --git a/.mine b/.mine\nindex 11f089f2aaa190f92dd0913c7aa0da774d3d8105..351be5bf6e17c59ea560546d69654115ecb2fd8d 100644\n--- a/.mine\n+++ b/.mine\n@@ -1,2 +1 @@\n mine\n-edited in home\n",
+  "/scratch/home/.tmplfile": "diff --git a/.tmplfile b/.tmplfile\nindex aa8cd82b85fe6b6d76f040a1b1149e21d97efc9d..e89e4662e68991906d8349cc8cfcbfc281273524 100644\n--- a/.tmplfile\n+++ b/.tmplfile\n@@ -1 +1,2 @@\n TMPL\n+MORE\n",
+  "/scratch/home/.tool": "diff --git a/.tool b/.tool\nindex 848826977c9851ef3630008b1c8ed87c9594c360..1e3deb707d6a987f269c32b208a740079840b6d7 100755\n--- a/.tool\n+++ b/.tool\n@@ -1,2 +1,3 @@\n #!/bin/sh\n echo tool\n+echo more\n",
+  "/scratch/home/hello.sh": "diff --git a/hello.sh b/hello.sh\nnew file mode 100755\nindex 0000000000000000000000000000000000000000..8059d47ca08aa872d276608e052f8ea6e22e9b42\n--- /dev/null\n+++ b/hello.sh\n@@ -0,0 +1,2 @@\n+#!/bin/sh\n+echo changed >/dev/null\n"
+}

@@ -7,6 +7,7 @@ symlinked config stays a symlink.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import re
@@ -149,11 +150,43 @@ class Config:
             self.doc[table] = tomlkit.table()
         self.doc[table][name] = value
 
+    def change(self, key: str, value: object) -> None:
+        """Set one scalar setting and save it (spec §9).
+
+        A save that fails puts the setting back, in the typed config and the
+        document, before the `OSError` propagates: the screen, the file and
+        what is in effect keep the previous value (#32).
+        """
+        tables = (self.ui, self.refresh, self.secrets)
+        text = tomlkit.dumps(self.doc)
+        self.set(key, value)
+        try:
+            self.save()
+        except OSError:
+            self.ui, self.refresh, self.secrets = tables
+            self.doc = tomlkit.parse(text)
+            raise
+
     def save(self) -> None:
-        """Write the document in place (no temp-and-rename), so a symlink survives."""
+        """Write the document in place (no temp-and-rename), so a symlink survives.
+
+        Opening the file empties it, so a write that then fails (a full disk)
+        puts the previous contents back as best it can.
+        """
+        text = tomlkit.dumps(self.doc)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w", encoding="utf-8") as f:
-            f.write(tomlkit.dumps(self.doc))
+        try:
+            previous: bytes | None = self.path.read_bytes()
+        except OSError:
+            previous = None
+        try:
+            with self.path.open("w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            if previous is not None:
+                with contextlib.suppress(OSError):
+                    self.path.write_bytes(previous)
+            raise
 
 
 def load(path: Path | None = None) -> Config:

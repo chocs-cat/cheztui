@@ -14,9 +14,11 @@ agents, including `cheztui edit` for safe scripted edits to managed files.
 
 **Status:** early. The read commands `cheztui status` and `cheztui verify`
 work, as do `cheztui edit` and `cheztui add` for scripted writes. `cheztui`
-opens the TUI's frame and its Drift list, with filter, selection, help, a
-command palette, the session log and settings; its fixes (apply, re-add,
-merge and the rest) arrive with the rest of v0.1. The design is in
+opens the TUI on the Drift view: each row's direction, status and tags,
+and a detail pane with the default fix and chezmoi's diff, masked (`t`
+shows a template's rendered output, `R` reveals), with filter, selection,
+help, a command palette, the session log and settings. Its fixes (apply,
+re-add, merge and the rest) arrive with the rest of v0.1. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
 

@@ -75,6 +75,7 @@ class CheztuiApp(App[None]):
     #panes.-narrow { layout: vertical; }
     #list-pane { width: 2fr; height: 1fr; }
     #detail { width: 3fr; height: 1fr; border-left: solid $panel; padding: 0 1; }
+    #detail-rule { margin: 0; color: $panel; }
     #panes.-narrow #list-pane { width: 1fr; height: 1fr; }
     #panes.-narrow #detail {
         width: 1fr;
@@ -197,12 +198,19 @@ class CheztuiApp(App[None]):
     def _works(self, key: keys.Key) -> bool:
         return self.check_action(_action_name(key.action), ()) is not False
 
+    def key_label(self, key: keys.Key) -> str:
+        """A key's word; a view's key may change it with the view's state (`t`, spec §6)."""
+        return self.view.key_label(key) if key in self.view.KEYS else key.label
+
     def _render_key_bar(self) -> None:
         parts = [
-            Content.assemble((key.keys, "bold $accent"), f" {key.label}")
+            Content.assemble((key.keys, "bold $accent"), f" {self.key_label(key)}")
             for key in self.key_bar_keys()
         ]
         self.query_one("#key-bar", Static).update(_joined(parts, "  "))
+
+    def on_list_detail_changed(self, event: ListDetail.Changed) -> None:
+        self._render_key_bar()
 
     # --- Log line and session log ---------------------------------------------
 
@@ -223,10 +231,14 @@ class CheztuiApp(App[None]):
         """Switch view; Drift is the only one so far (DEC-20)."""
 
     def start_read(self) -> None:
-        """Read chezmoi; a read still running is cancelled by this one."""
+        """Read chezmoi; a read still running is cancelled by this one.
+
+        The detail's bodies are read again too (spec §6 Detail reads).
+        """
         self._read_id += 1
         self.reading = True
         self.set_log_line(READING)
+        self.view.reset_detail()
         self.run_worker(self._read(self._read_id), group="read", exclusive=True)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -234,7 +246,14 @@ class CheztuiApp(App[None]):
         # session log and settings have their own (spec §5).
         if action in _FRAME_ACTIONS and self.screen is not self.screen_stack[0]:
             return False
+        if action in self._view_actions:
+            # A view's key, asked about by the key bar.
+            return self.view.check_action(action, parameters)
         return self.available(action)
+
+    @property
+    def _view_actions(self) -> frozenset[str]:
+        return frozenset(_action_name(k.action) for k in self.view.KEYS)
 
     def available(self, action: str) -> bool:
         """Whether a frame action works now, whatever screen is on top."""
@@ -244,13 +263,20 @@ class CheztuiApp(App[None]):
             return self.view.has_rows
         if action == "toggle_focus":
             return self.narrow
+        if action == "reveal":
+            return self.view.can_reveal
         return True
 
     @property
     def palette_keys(self) -> list[keys.Key]:
         """The palette's entries: the view's, then the global ones, that work now (spec §5)."""
-        listed = [*self.view.KEYS, *keys.GLOBAL]
-        return [k for k in listed if k.palette and self.available(_action_name(k.action))]
+        view = [k for k in self.view.KEYS if k.palette and self._works(k)]
+        frame = [k for k in keys.GLOBAL if k.palette and self.available(_action_name(k.action))]
+        return view + frame
+
+    async def run_key(self, key: keys.Key) -> None:
+        """Run a key's action as pressing it would, a view's key on its view (spec §5)."""
+        await self.run_action(key.action, self.view if key in self.view.KEYS else None)
 
     # --- Help, palette, session log, settings (spec §5, §9) ------------------------
 
@@ -325,6 +351,11 @@ class CheztuiApp(App[None]):
         else:
             self.detail.focus()
 
+    def action_reveal(self) -> None:
+        """`R`: reveal the body on screen, or mask it again (spec §6 Reveal)."""
+        self.view.toggle_reveal()
+        self._render_key_bar()
+
     def action_cancel_read(self) -> None:
         """`esc`: cancel the read; the earlier data stays (spec §5)."""
         if not self.reading:
@@ -344,7 +375,11 @@ class CheztuiApp(App[None]):
             # parser messages that quote chezmoi's output (DEC-33).
             message = ops.mask_diagnostic(masker, ops.failure_message(error), whole=False)
             stderr = error.stderr if isinstance(error, ChezmoiFailed | GitFailed) else ""
-            failures.append((message, stderr.rstrip("\n") or message))
+            diagnostic = stderr.rstrip("\n") or message
+            failures.append((message, diagnostic))
+            # Logged as it is shown: a read cancelled before it ends must not
+            # drop an error already on screen (spec §5, #31).
+            self.record(f"✗ {message}", diagnostic)
 
         if not self._version_ok:
             try:
@@ -383,12 +418,11 @@ class CheztuiApp(App[None]):
         self._finish(read_id, failures)
 
     def _finish(self, read_id: int, failures: list[tuple[str, str]]) -> None:
+        """End the read: the log line shows its first failure, already logged."""
         self._render_frame()
         if read_id != self._read_id:
             return
         self.reading = False
-        for message, diagnostic in failures:
-            self.record(f"✗ {message}", diagnostic)
         if failures:
             self.set_log_line(failures[0][0], error=True)
         else:

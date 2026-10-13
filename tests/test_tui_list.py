@@ -31,9 +31,14 @@ def current(app) -> str | None:
 
 
 def shown(app) -> list[str]:
-    """The list as displayed: gutter and label."""
+    """The list as displayed, gutter and target; tests/test_tui_drift.py has the rest of a row."""
     listing = app.query_one(RowList)
-    return [str(listing.get_option_at_index(i).prompt) for i in range(listing.option_count)]
+    rows = view(app).shown
+    assert listing.option_count == len(rows)
+    return [
+        str(listing.get_option_at_index(i).prompt)[:2] + view(app).label(row)
+        for i, row in enumerate(rows)
+    ]
 
 
 def names(rows: list[DriftRow]) -> list[str]:
@@ -56,26 +61,26 @@ async def test_j_k_and_arrows_move_the_current_row(tmp_path):
         await pilot.press("j")
         assert current(app) == ".gone"
         await pilot.press("down", "down")
-        assert current(app) == ".tool"
+        assert current(app) == ".tmplfile"
         await pilot.press("k")
         assert current(app) == ".mine"
-        assert text(app, "#detail-body") == "~/.mine\n/scratch/source/dot_mine"
+        assert text(app, "#detail-head").startswith("~/.mine  ")
         await pilot.press("up", "up", "up")
         assert current(app) == ".both file"  # it stops at the ends
-        await pilot.press(*"jjjjjj")
+        await pilot.press(*"jjjjjjj")
         assert current(app) == "hello.sh"
 
 
-@pytest.fixture
-def long_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        DriftView, "detail", lambda self, row: "\n".join(f"line {i}" for i in range(100))
-    )
+def long_detail() -> FakeChezmoi:
+    """The first row's diff runs to a hundred lines."""
+    fake = FakeChezmoi.drifted()
+    lines = "".join(f"+line {i}\n" for i in range(100))
+    fake.diff[HOME / ".both file"] = f"@@ -0,0 +1,100 @@\n{lines}"
+    return fake
 
 
-@pytest.mark.usefixtures("long_detail")
 async def test_J_K_and_page_keys_scroll_the_detail(tmp_path):
-    app = make_app(FakeChezmoi.drifted(), tmp_path)
+    app = make_app(long_detail(), tmp_path)
     async with app.run_test(size=(120, 20)) as pilot:
         await settled(pilot)
         detail = app.query_one(Detail)
@@ -91,9 +96,8 @@ async def test_J_K_and_page_keys_scroll_the_detail(tmp_path):
         assert current(app) == ".both file"  # the list didn't move
 
 
-@pytest.mark.usefixtures("long_detail")
 async def test_tab_toggles_focus_when_narrow(tmp_path):
-    app = make_app(FakeChezmoi.drifted(), tmp_path)
+    app = make_app(long_detail(), tmp_path)
     async with app.run_test(size=(80, 32)) as pilot:
         await settled(pilot)
         detail = app.query_one(Detail)
@@ -144,14 +148,20 @@ async def test_filter_is_a_live_case_insensitive_substring(tmp_path):
         assert shown(app) == ["  ~/.mine"]
         assert current(app) == ".mine"
         await pilot.press("backspace", "backspace")
-        assert shown(app) == ["  ~/.both file", "  ~/.gone", "  ~/.mine", "  ~/.tool"]
+        assert shown(app) == [
+            "  ~/.both file",
+            "  ~/.gone",
+            "  ~/.mine",
+            "  ~/.tmplfile",
+            "  ~/.tool",
+        ]
         await pilot.press("enter")
         assert app.query_one(RowList).has_focus
         assert app.query_one(FilterInput).display
-        assert len(shown(app)) == 4  # kept
-        assert text(app, "#tabs").strip() == "1 Drift 5"  # the tab counts every row
+        assert len(shown(app)) == 5  # kept
+        assert text(app, "#tabs").strip() == "1 Drift 6"  # the tab counts every row
         await pilot.press("slash", "escape")
-        assert len(shown(app)) == 5
+        assert len(shown(app)) == 6
         assert not app.query_one(FilterInput).display
         assert app.query_one(RowList).has_focus
 
@@ -173,7 +183,7 @@ async def test_a_target_outside_home_filters_on_its_absolute_form(tmp_path, monk
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        await pilot.press("slash", *"/SCRATCH/home/.t", "enter")
+        await pilot.press("slash", *"/SCRATCH/home/.to", "enter")
         assert shown(app) == ["  /scratch/home/.tool"]
         await pilot.press("slash", "ctrl+u", "~", "enter")
         assert shown(app) == []
@@ -210,6 +220,7 @@ async def test_space_toggles_the_gutter(tmp_path):
             "● ~/.both file",
             "  ~/.gone",
             "● ~/.mine",
+            "  ~/.tmplfile",
             "  ~/.tool",
             "  ~/hello.sh",
         ]
@@ -226,7 +237,7 @@ async def test_targets_are_the_shown_selection_else_the_current_row(tmp_path):
         await settled(pilot)
         await pilot.press("j", "j")
         assert names(view(app).targets()) == [".mine"]
-        await pilot.press("j", "j", "space", "k", "k", "k", "space")
+        await pilot.press("j", "j", "j", "space", "k", "k", "k", "k", "space")
         assert names(view(app).targets()) == [".gone", "hello.sh"]  # list order
         # A selected row the filter hides isn't acted on, and comes back selected.
         await pilot.press("slash", *"hello", "enter")
@@ -293,7 +304,7 @@ async def test_the_current_row_keeps_its_position_when_its_target_goes(tmp_path)
         fake.status = status_without(".mine")
         await pilot.press("g")
         await settled(pilot)
-        assert current(app) == ".tool"  # same position
+        assert current(app) == ".tmplfile"  # same position
 
 
 async def test_the_current_row_clamps(tmp_path):
@@ -301,9 +312,9 @@ async def test_the_current_row_clamps(tmp_path):
     app = make_app(fake, tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        await pilot.press("j", "j", "j", "j")
+        await pilot.press("j", "j", "j", "j", "j")
         assert current(app) == "hello.sh"
-        fake.status = status_without("hello.sh", ".tool")
+        fake.status = status_without("hello.sh", ".tool", ".tmplfile")
         await pilot.press("g")
         await settled(pilot)
         assert current(app) == ".mine"

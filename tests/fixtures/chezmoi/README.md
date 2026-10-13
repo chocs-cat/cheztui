@@ -14,15 +14,16 @@ scratch root is replaced with `/scratch`, so no machine path is committed;
 | `dump.json` | `chezmoi dump --format=json` |
 | `state-dump.json` | `chezmoi state dump --format=json` |
 | `dump-config.json` | `chezmoi dump-config --format=json` |
+| `diff.json` | `chezmoi diff --no-pager --color=false --use-builtin-diff <target>` for each status row, keyed by the target |
 
 Every command also runs with `--no-tty` and scratch `--config`, `--source`
 and `--destination`.
 
 The setup has a `you→` row (`.mine`, `MM`), a `both` row whose name has a
 space (`.both file`, `MM`), a `src→` row on an executable file (`.tool`,
-` M`), an onchange script (`hello.sh`, ` R`), a deleted target (`.gone`,
-`DA`), a template (`.tmplfile`), a directory (`.dir`) and a symlink
-(`.link`).
+` M`), a `src→` row on a template whose source changed after the apply
+(`.tmplfile`, ` M`), an onchange script (`hello.sh`, ` R`), a deleted
+target (`.gone`, `DA`), a directory (`.dir`) and a symlink (`.link`).
 
 To record them again, with the chezmoi you want first on `PATH`:
 
