@@ -8,6 +8,7 @@ fixtures; tests/fixtures/chezmoi/README.md says how to run it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ from cheztui.chezmoi import (
     parse_state_dump,
     parse_status,
 )
+from cheztui.ops import ACTION_ARGS, PREVIEW_FLAGS, drift
 from tests.conftest import Scratch, requires_chezmoi
 
 FIXTURES = Path(__file__).parent / "fixtures" / "chezmoi"
@@ -379,4 +381,15 @@ def test_record_fixtures(scratch: Scratch, monkeypatch: pytest.MonkeyPatch):
             str(scratch.root), str(ROOT)
         )
     (FIXTURES / "diff.json").write_text(json.dumps(diffs, indent=2, sort_keys=True) + "\n")
+    # The write previews' dry runs (spec §5 Drift command plans), before anything
+    # writes: apply on every status row, re-add on the you→ file rows.
+    rows = asyncio.run(drift(scratch.chezmoi())).rows
+    readd = [r.target for r in rows if r.direction == "you" and r.target.is_file()]
+    previews: dict[str, dict[str, str]] = {"apply": {}, "re-add": {}}
+    for action, targets in (("apply", [r.target for r in rows]), ("re-add", readd)):
+        for target in targets:
+            done = scratch.run(*ACTION_ARGS[action], *PREVIEW_FLAGS, str(target))
+            key = str(target).replace(str(scratch.root), str(ROOT))
+            previews[action][key] = done.stdout.replace(str(scratch.root), str(ROOT))
+    (FIXTURES / "preview.json").write_text(json.dumps(previews, indent=2, sort_keys=True) + "\n")
     test_fixtures_hold_no_machine_paths()
