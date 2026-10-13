@@ -663,3 +663,37 @@ async def test_live_apply_writes_the_target(scratch: Scratch):
         await settled(pilot)
         assert (scratch.home / ".tool").read_text() == "#!/bin/sh\necho tool\necho more\n"
         assert log_line(app) == "applied ~/.tool (no commit)"
+
+
+async def test_x_forgets_the_targets_after_the_preview(tmp_path, root):
+    app, fake, _ = drift_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await select(pilot, ".tool", ".mine")
+        await pilot.press("x")
+        modal = await until_modal(pilot)
+        assert [c.action for c in modal.plan.commands] == ["forget"]
+        await pilot.press("enter")
+        await settled(pilot)
+        home = root / "home"
+        assert writes(fake) == [("forget", "--force", str(home / ".mine"), str(home / ".tool"))]
+        assert log_line(app) == "forgot 2 targets (no commit)"
+
+
+async def test_a_cancelled_refresh_after_a_write_replaces_the_result(tmp_path, root):
+    app, fake, _ = drift_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".tool")
+        await pilot.press("a")
+        await until_modal(pilot)
+        release = fake.hold("symbolic-ref")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.reading and app.writing is None)
+        assert log_line(app) == "applied ~/.tool (no commit)"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert log_line(app) == "refresh cancelled"
+        assert logged(app) == ["applied ~/.tool (no commit)", "refresh cancelled"]
+        release.set()
+        await settled(pilot)
