@@ -139,9 +139,10 @@ stack detail under the list; `tab` toggles focus.
   result, error or cancellation, empty at start. An error shows as
   `✗ <message>`, in the error colour, with the message the CLI would print
   after `cheztui: ` (§7). A read that succeeds leaves it empty, except
-  the refresh after a write: that one leaves the write's result showing,
-  without `reading chezmoi…`, and only its failure or cancellation
-  replaces it (§6 Drift, *Result*; DEC-35).
+  the refresh after a write and a watch refresh: those leave the line as
+  it was, without `reading chezmoi…`, and only their failure or
+  cancellation replaces it (§5 Refresh, §6 Drift *Result*; DEC-35,
+  DEC-37).
 - **List.** One row is current; moving stops at either end. `/` opens a
   one-line filter input under the list that filters as you type:
   case-insensitive substring of the target as displayed (`~/…`); `enter`
@@ -365,6 +366,56 @@ whole rather than returning potentially rendered secret text.
   refreshes the affected views, debounced.
 - `g` forces a full refresh.
 - Refreshes after every write.
+
+**Watching in the TUI** (DEC-37):
+
+- **What is watched.** The source dir (`sourceDir`, as the header reads
+  it), recursively, and the parent dir of each managed target, not
+  recursively. The targets are the absolute paths of `chezmoi managed
+  --format=json --path-style=all --exclude=scripts`: a script has no
+  target, and its source is under the source dir. A dir that doesn't
+  exist when watching starts is left out; with nothing to watch, no
+  watcher runs.
+- **Which events count.** Any change (added, modified, deleted) under the
+  source dir, except at a path with a `.git` component below the source
+  dir; and in a target's parent, a change to a managed target itself, not
+  to a sibling. A path is compared as its parent dir resolved
+  (`os.path.realpath`) joined with its own name, on both sides: macOS
+  reports resolved paths, and a target may itself be a symlink.
+  watchfiles' default filter is off; these rules are the only filter.
+- **Debounce.** A refresh is due `refresh.debounce_ms` after the last
+  event that counts; each such event restarts the wait. `0` makes it due
+  as soon as watchfiles reports the event.
+- **A watch refresh** is the read `g` runs (the Drift read and the header
+  read), but quiet: no `reading chezmoi…`, and the log line keeps what it
+  showed unless the read fails or is cancelled (§4 Log line). `esc`
+  cancels it as it does any read. One that falls due while another read
+  runs waits for that read to end, then runs once.
+- **cheztui's own writes.** One that falls due while a write is being
+  prepared or its preview is open waits; when the write ends without
+  executing (cancelled, blocked, its preparation failed), one watch
+  refresh runs then. From the start of execution until the refresh after
+  the write ends, however it ends (finished, failed, cancelled, or
+  replaced by `g`'s read), watching is paused: events are dropped, a wait
+  under way is dropped, and a refresh waiting on the write is dropped;
+  the write's own refresh covers them.
+- **The watch set.** While `refresh.watch` is on, the TUI's read runs the
+  `managed` read above alongside the Drift and header reads. When it and
+  the header read both succeed and the source dir or the targets differ
+  from the running watcher's, the watcher restarts with the new set. A
+  failed `managed` read is a read failure like the other two (logged, on
+  the log line); it clears nothing, and the watcher keeps its set.
+- **Settings.** `refresh.watch` and `refresh.debounce_ms` changed on the
+  settings screen, or in the file through its `e`, take effect at once:
+  off stops the watcher, on starts it with the last watch set (or after
+  the next read, with none yet), and a new debounce restarts it.
+- **Failure.** A watcher that fails (a watched dir removed, the system's
+  watch limit) stops, and the log line and session log show `✗ watching
+  stopped: <message>`, the message masked as a read's diagnostic is
+  (§5 Reads in the TUI). The next read that yields a watch set starts it
+  again.
+- `refresh.watch = false` leaves `g` and the refresh after a write. `-n`
+  doesn't change watching.
 
 ### Secrets
 
@@ -1165,8 +1216,9 @@ The screen (DEC-33) lists one row per scalar, `key  value`, in the order
 `refresh.debounce_ms`, `secrets.token_formats`. `enter` on a boolean
 toggles it; on `ui.theme` it opens a list of the themes Textual knows; on
 an integer it opens an input on the row. A change is validated as the file
-would be, saved at once, and takes effect at once (the theme and the
-layout immediately; the others where they are next read). An invalid value
+would be, saved at once, and takes effect at once (the theme, the
+layout and `refresh.*` immediately, §5 Refresh; the others where they are
+next read). An invalid value
 shows its error on the row and isn't saved. A valid value that can't be
 written (a read-only file, a full disk) shows the save error on the row
 and is put back, so the screen, the file and what is in effect keep the
@@ -1241,7 +1293,10 @@ src/cheztui/
   only events on managed paths. Events are debounced by
   `refresh.debounce_ms`; events during cheztui's own write are dropped, and
   the write's own refresh covers them. `refresh.watch = false` leaves only
-  `g` and the post-write refresh.
+  `g` and the post-write refresh. `watch.py` knows nothing of Textual or
+  chezmoi: given a source dir, the targets and a debounce, it calls back
+  when a refresh is due, and can be paused and resumed. The TUI owns what
+  a refresh does and when one waits (DEC-37).
 - `chezmoi.py` takes a runner, so TUI tests swap in `tests/fake_chezmoi.py`
   and integration tests run the real binary against scratch dirs. A runner
   is an async callable `(argv, *, cwd=None, env=None, stdin=None)` returning

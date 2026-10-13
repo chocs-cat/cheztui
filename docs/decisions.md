@@ -635,3 +635,36 @@ TUI* left open; these are the choices, written into it.
   <action> exited <code>`), so every failure entry has a body.
 
 *Where:* `docs/spec.md` §6 (Drift, *Actions in the TUI*).
+
+## DEC-37: How watching refreshes the TUI (2026-10)
+
+Spec §5 *Refresh* and §10 named what is watched and that a write's own
+events are dropped; building it needs the edges those lines left open.
+These are the choices, written into §5 *Watching in the TUI*.
+
+- A watch refresh is quiet: it doesn't say `reading chezmoi…`, and a
+  success leaves the log line as it was. The user didn't ask for it, and
+  saving a file elsewhere shouldn't wipe a result or an error still worth
+  reading, as DEC-35 keeps a write's result through its own refresh. A
+  failure or cancellation still replaces the line, so a broken read is
+  never hidden.
+- A watch refresh never cancels a read: one that falls due mid-read waits
+  and runs once after it, since the running read may have read the file
+  before it changed.
+- The watch set needs every managed target, and the Drift read reads
+  `managed` only when something drifted, which is when watching matters
+  least. So the TUI's read adds `managed --exclude=scripts` while
+  watching is on; the source dir comes from the header's `dump-config`.
+- A write pauses watching from execution until its refresh ends, rather
+  than filtering the write's events out after the debounce: the debounce
+  would deliver them after the refresh, as a second one. While a write is
+  only being prepared nothing has written, so a refresh that falls due
+  waits and runs if the write never executes, and the view isn't left
+  stale by a cancelled preview.
+- Paths are compared with their parent dirs resolved: macOS reports
+  `/private/var/…` for a dir watched as `/var/…`, and resolving the
+  target itself would lose a managed symlink.
+- `refresh.*` take effect at once from the settings screen: a watcher
+  left running after `watch = false` would read as a broken setting.
+
+*Where:* `docs/spec.md` §4 (Log line), §5 (Refresh), §9, §10.
