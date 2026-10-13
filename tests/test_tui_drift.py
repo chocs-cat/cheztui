@@ -6,6 +6,7 @@ diffs are the ones chezmoi recorded (tests/fixtures/chezmoi/diff.json).
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -343,6 +344,91 @@ async def test_g_reads_the_bodies_again(tmp_path):
         assert calls(fake, "diff") == 3
         await move_to(pilot, ".both file")
         assert calls(fake, "diff") == 4  # its kept body went with the refresh
+
+
+def encrypt(fake: FakeChezmoi, name: str) -> None:
+    """Make `managed --include=encrypted` list the target, as `chezmoi add --encrypt` would."""
+    entries = json.loads(fake.managed[None])
+    fake.managed["encrypted"] = json.dumps({name: entries[name]})
+
+
+async def until_kept(pilot, name: str) -> None:
+    """Wait for the row's body read to finish, whatever else is held."""
+    for _ in range(200):
+        if (HOME / name, False) in view(pilot.app).bodies:
+            return
+        await pilot.pause()
+    raise AssertionError(f"no body kept for {name}")
+
+
+@pytest.mark.parametrize("hold_status", [False, True])
+async def test_a_refreshed_row_is_read_for_its_new_value(tmp_path, hold_status):
+    # A body is masked for the row on screen: a refresh that tags it `enc` reads it
+    # again, whole-masked, even when the old row's read finished first (DEC-34).
+    fake = FakeChezmoi.drifted()
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".tool")
+        assert "+echo more" in body(app)
+        encrypt(fake, ".tool")
+        if hold_status:
+            release = fake.hold("status")
+            await pilot.press("g")
+            await until_kept(pilot, ".tool")  # read with the old row, during the refresh
+            release.set()
+        else:
+            await pilot.press("g")
+        await settled(pilot)
+        row = view(app).current()
+        assert row is not None
+        assert row.tags == ("enc", "exec")
+        assert body(app).endswith(f"@@ -1,2 +1,3 @@\n {MASK}\n {MASK}\n+{MASK}")
+        kept = [v for k, v in view(app).bodies.items() if k[0] == HOME / ".tool"]
+        assert len(kept) == 1
+        assert kept[0][0] == row
+        assert kept[0][1].masked
+        assert "echo more" not in repr(view(app).bodies)
+
+
+@pytest.mark.parametrize("hold_status", [False, True])
+async def test_an_unchanged_row_keeps_the_refresh_read(tmp_path, hold_status):
+    # The body `g` starts is kept when the refreshed row is the same value.
+    fake = FakeChezmoi.drifted()
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".tool")
+        before = calls(fake, "diff")
+        if hold_status:
+            release = fake.hold("status")
+            await pilot.press("g")
+            await until_kept(pilot, ".tool")
+            release.set()
+        else:
+            await pilot.press("g")
+        await settled(pilot)
+        assert calls(fake, "diff") == before + 1
+        assert "+echo more" in body(app)
+
+
+async def test_a_cancelled_refresh_still_reads_the_body(tmp_path):
+    # `esc` keeps the rows on screen, and their body is read again for them.
+    fake = FakeChezmoi.drifted()
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".tool")
+        before = calls(fake, "diff")
+        release = fake.hold("status")
+        await pilot.press("g")
+        await pilot.pause()
+        await pilot.press("escape")
+        await until_kept(pilot, ".tool")
+        release.set()
+        await settled(pilot)
+        assert calls(fake, "diff") == before + 1
+        assert "+echo more" in body(app)
 
 
 async def test_the_destination_is_read_once_per_refresh(tmp_path):

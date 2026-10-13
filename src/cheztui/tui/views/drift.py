@@ -4,7 +4,9 @@ Each row shows its direction, status columns, target and tags. The detail
 is a head (the target and the direction in words, the source, the default
 fix), a rule and a body: chezmoi's diff, or a template's rendered output
 with `t`. Bodies are read in one exclusive worker and kept per row until
-the next refresh (DEC-6); `R` re-reads the one on screen unmasked, and the
+the next refresh (DEC-6), each for the row value it was read with: a
+refresh's row whose tags or source changed is read again, so a body is
+always masked for the row on screen (DEC-34); `R` re-reads the one on screen unmasked, and the
 clear text lives only in the pane (DEC-17, DEC-30). Reading, masking and
 cutting are `ops.drift_body`'s; colouring and layout are here.
 """
@@ -65,14 +67,15 @@ class DriftView(ListDetail[DriftRow]):
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
-        self.bodies: dict[tuple[Path, bool], DriftBody] = {}  # masked only, until a refresh
+        # Masked only, until a refresh; each with the row it was read for.
+        self.bodies: dict[tuple[Path, bool], tuple[DriftRow, DriftBody]] = {}
         self.rendered = False  # `t`: the rendered output is on screen
         self.revealing = False  # `R`: the body on screen is read unmasked
         self._revealed: str | None = None  # that clear text, in the pane alone
         self._failed: tuple[BodyKey, str] | None = None  # a failed read's pane line
         self._reading: BodyKey | None = None  # the read in flight
         self._read_id = 0
-        self._target: Path | None = None  # the row the detail shows
+        self._row: DriftRow | None = None  # the row the detail shows
         self._dest: asyncio.Future[Path] | None = None  # this refresh's destination
 
     @property
@@ -120,11 +123,12 @@ class DriftView(ListDetail[DriftRow]):
 
     def _render_detail(self) -> None:
         row = self.current()
-        if row is None or row.target != self._target:
-            # Another row, or none: the diff again, masked (spec §6 Body: rendered, Reveal).
+        if row != self._row:
+            # Another row, none, or a refresh's new value for this one: the diff again,
+            # masked (spec §6 Body: rendered, Reveal), and nothing read for the old value.
             self._drop()
             self.rendered = False
-        self._target = row.target if row is not None else None
+        self._row = row
         if row is None:
             self.show_detail(None, "")
             return
@@ -154,8 +158,13 @@ class DriftView(ListDetail[DriftRow]):
             return diff_content(text) if text else NO_DIFF
         return Content(text.removesuffix("\n"))
 
+    def _cached_body(self, row: DriftRow) -> DriftBody | None:
+        """The kept body, if it was read for this row value (DEC-34)."""
+        kept = self.bodies.get((row.target, self.rendered))
+        return kept[1] if kept is not None and kept[0] == row else None
+
     def _cached(self, row: DriftRow) -> str | None:
-        body = self.bodies.get((row.target, self.rendered))
+        body = self._cached_body(row)
         return body.text if body is not None else None
 
     def _start(self, row: DriftRow) -> None:
@@ -235,7 +244,7 @@ class DriftView(ListDetail[DriftRow]):
         if reveal:
             self._revealed = body.text
         else:
-            self.bodies[(row.target, rendered)] = body
+            self.bodies[(row.target, rendered)] = (row, body)
         self._render_detail()
 
     def on_unmount(self) -> None:
@@ -272,7 +281,7 @@ class DriftView(ListDetail[DriftRow]):
             return False
         if self.revealing:
             return True
-        body = self.bodies.get((row.target, self.rendered))
+        body = self._cached_body(row)
         return body is not None and body.masked and self._failed is None
 
     def toggle_reveal(self) -> None:
