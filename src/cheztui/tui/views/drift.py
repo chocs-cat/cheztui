@@ -55,6 +55,45 @@ TOGGLE = Key(
     palette=True,
 )
 
+# The actions, in key-bar order; M, x and A are in help and the palette only
+# (spec §6 Drift, Keys and *Actions in the TUI*).
+FIX = Key("enter", "Default fix for the row", (("enter", "fix"),), label="Fix", palette=True)
+APPLY = Key("a", "Apply", (("a", "apply"),), label="Apply", palette=True)
+READD = Key(
+    "r",
+    "Re-add (not on templates, directories, symlinks or deleted targets)",
+    (("r", "re_add"),),
+    label="Re-add",
+    palette=True,
+)
+MERGE = Key(
+    "m",
+    "Merge in chezmoi's merge tool (not on directories, symlinks or rows with no target state)",
+    (("m", "merge"),),
+    label="Merge",
+    palette=True,
+)
+EDIT = Key("e", "Edit source", (("e", "edit"),), label="Edit", palette=True)
+FULL_DIFF = Key("d", "Full diff", (("d", "full_diff"),), label="Full diff", palette=True)
+MERGE_SELECTION = Key(
+    "M",
+    "Merge through the selection, one chezmoi merge call",
+    (("M", "merge_selection"),),
+    palette=True,
+)
+FORGET = Key("x", "Forget", (("x", "forget"),), palette=True)
+APPLY_ALL = Key("A", "Apply all", (("A", "apply_all"),), palette=True)
+
+# What each write key prepares, over the targets or the current row (spec §6 *Prepare*).
+TARGETS: dict[str, ops.Action] = {
+    "apply": "apply",
+    "re_add": "re-add",
+    "forget": "forget",
+    "merge_selection": "merge",
+}
+CURRENT: dict[str, ops.Action] = {"edit": "edit", "merge": "merge"}
+WRITES = frozenset({*TARGETS, *CURRENT, "fix", "apply_all"})
+
 # The pane's body: a target, the rendered output (not the diff), revealed.
 BodyKey = tuple[Path, bool, bool]
 
@@ -62,7 +101,18 @@ BodyKey = tuple[Path, bool, bool]
 class DriftView(ListDetail[DriftRow]):
     NAME = "Drift"
     EMPTY = "✓ in sync"
-    KEYS = (TOGGLE,)
+    KEYS = (
+        FIX,
+        APPLY,
+        READD,
+        MERGE,
+        EDIT,
+        FULL_DIFF,
+        TOGGLE,
+        MERGE_SELECTION,
+        FORGET,
+        APPLY_ALL,
+    )
     BINDINGS = keys.bindings(KEYS)
 
     def __init__(self, *, id: str | None = None) -> None:
@@ -258,7 +308,72 @@ class DriftView(ListDetail[DriftRow]):
         if action == "toggle_rendered":
             row = self.current()
             return row is not None and "tmpl" in row.tags
+        if action in WRITES or action == "full_diff":
+            return self.can_write(action)
         return True
+
+    # --- The actions (spec §6 Drift, *Actions in the TUI*; DEC-35) ----------------------
+
+    def can_write(self, action: str) -> bool:
+        """A key works when `ops.eligibility` admits a row it would take, and no
+        write is being prepared or run (spec §6 Keys)."""
+        if self.cheztui.writing is not None:
+            return False
+        if action in TARGETS:
+            return any(ops.eligibility(TARGETS[action], r) is None for r in self.targets())
+        row = self.current()
+        if action in CURRENT:
+            return row is not None and ops.eligibility(CURRENT[action], row) is None
+        if action == "apply_all":
+            return self.has_rows
+        return row is not None  # enter, d
+
+    def _prepare(self, action: str) -> None:
+        if not self.can_write(action):
+            return
+        writes = self.cheztui.writes
+        # The rows are taken now: a refresh landing while the plan is prepared
+        # doesn't change what it names (spec §6 *Prepare*).
+        if action in TARGETS:
+            rows = self.targets()
+            self.cheztui.start_write(lambda: writes.prepare(TARGETS[action], rows))
+        elif action in CURRENT:
+            row = self.current()
+            assert row is not None
+            self.cheztui.start_write(lambda: writes.prepare(CURRENT[action], [row]))
+        elif action == "fix":
+            rows = self.targets()
+            self.cheztui.start_write(lambda: writes.prepare_defaults(rows))
+        else:
+            every = list(self.rows or ())  # whatever the filter and selection show
+            self.cheztui.start_write(lambda: writes.prepare_apply_all(every))
+
+    def action_fix(self) -> None:
+        self._prepare("fix")
+
+    def action_apply(self) -> None:
+        self._prepare("apply")
+
+    def action_re_add(self) -> None:
+        self._prepare("re_add")
+
+    def action_merge(self) -> None:
+        self._prepare("merge")
+
+    def action_edit(self) -> None:
+        self._prepare("edit")
+
+    def action_merge_selection(self) -> None:
+        self._prepare("merge_selection")
+
+    def action_forget(self) -> None:
+        self._prepare("forget")
+
+    def action_apply_all(self) -> None:
+        self._prepare("apply_all")
+
+    def action_full_diff(self) -> None:
+        """`d`: chezmoi's own diff in the terminal (spec §6 `d`)."""
 
     def key_label(self, key: Key) -> str:
         if key is TOGGLE:

@@ -547,7 +547,7 @@ async def test_t_is_only_for_templates(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert not key_bar(app).startswith("t ")
+        assert "  t " not in key_bar(app)
         assert not any(e.startswith("Rendered") for e in await palette_entries(pilot))
         await pilot.press("escape")
         await pilot.press("t")
@@ -561,18 +561,18 @@ async def test_t_toggles_the_rendered_output(tmp_path):
     async with app.run_test() as pilot:
         await settled(pilot)
         await move_to(pilot, ".tmplfile")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
         assert body(app).endswith("@@ -1 +1,2 @@\n TMPL\n+MORE")
         await pilot.press("t")
         await settled(pilot)
         assert body(app) == "TMPL\nMORE"
         assert spans(detail(app)) == []  # plain
-        assert key_bar(app).startswith("t Diff  ")
+        assert "  t Diff  " in key_bar(app)
         assert ("cat", str(HOME / ".tmplfile")) in fake.chezmoi_calls
         await pilot.press("t")
         await settled(pilot)
         assert body(app).endswith("+MORE")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
 
 
 async def test_the_palette_names_t_by_what_is_showing(tmp_path):
@@ -581,7 +581,7 @@ async def test_the_palette_names_t_by_what_is_showing(tmp_path):
         await settled(pilot)
         await move_to(pilot, ".tmplfile")
         entries = await palette_entries(pilot)
-        assert entries[0] == "Rendered  t"
+        assert "Rendered  t" in entries
         await pilot.press(*"rendered", "enter")
         await settled(pilot)
         assert view(app).rendered
@@ -604,7 +604,7 @@ async def test_a_move_or_a_refresh_returns_to_the_diff(tmp_path, leave):
             await settled(pilot)
         assert not view(app).rendered
         assert body(app).endswith("+MORE")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
 
 
 async def test_the_rendered_body_is_masked_as_a_body(tmp_path):

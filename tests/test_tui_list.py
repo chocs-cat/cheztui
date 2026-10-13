@@ -327,7 +327,7 @@ async def test_key_bar_with_rows(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert text(app, "#key-bar") == "space Select  / Filter  ? Help"
+        assert text(app, "#key-bar").endswith("  space Select  / Filter  ? Help")
 
 
 async def test_key_bar_without_rows(tmp_path):
