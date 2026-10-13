@@ -5,13 +5,16 @@ fixed time: positives poll for their condition, and a negative ("this
 didn't refresh") is shown by changing a sentinel afterwards and waiting for
 its one refresh, so the count is checked once everything before it has
 had its chance to arrive.
+
+`Watchers` makes `FakeWatcher`s; conftest installs it as the default
+watcher factory, so a TUI test watches nothing real unless it asks to.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 TIMEOUT = 15.0  # seconds; generous for macOS CI
@@ -68,3 +71,74 @@ async def after_sentinel(
     sentinel.write_text(f"sentinel {time.monotonic()}\n")
     await eventually(lambda: count() >= expected)
     await quiet(count, debounce_ms)
+
+
+class FakeWatcher:
+    """A watcher that watches nothing: `due()` calls back as a due refresh would,
+    `fail()` ends `run()` with an error, and `pause`/`resume` are recorded."""
+
+    def __init__(
+        self,
+        source_dir: Path,
+        targets: Sequence[Path],
+        debounce_ms: int,
+        on_due: Callable[[], None],
+    ) -> None:
+        self.source_dir = source_dir
+        self.targets = tuple(targets)
+        self.debounce_ms = debounce_ms
+        self.on_due = on_due
+        self.calls: list[str] = []  # "pause" and "resume", in order
+        self.running = False
+        self.stopped = False  # run() was cancelled
+        self._end: asyncio.Future[None] | None = None
+
+    @property
+    def paused(self) -> bool:
+        return bool(self.calls) and self.calls[-1] == "pause"
+
+    async def run(self) -> None:
+        self._end = asyncio.get_running_loop().create_future()
+        self.running = True
+        try:
+            await self._end
+        except asyncio.CancelledError:
+            self.stopped = True
+            raise
+        finally:
+            self.running = False
+
+    def pause(self) -> None:
+        self.calls.append("pause")
+
+    def resume(self) -> None:
+        self.calls.append("resume")
+
+    def due(self) -> None:
+        self.on_due()
+
+    def fail(self, error: Exception) -> None:
+        assert self._end is not None
+        self._end.set_exception(error)
+
+
+class Watchers:
+    """A watcher factory that makes `FakeWatcher`s and keeps them, newest last."""
+
+    def __init__(self) -> None:
+        self.made: list[FakeWatcher] = []
+
+    def __call__(
+        self,
+        source_dir: Path,
+        targets: Sequence[Path],
+        debounce_ms: int,
+        on_due: Callable[[], None],
+    ) -> FakeWatcher:
+        watcher = FakeWatcher(source_dir, targets, debounce_ms, on_due)
+        self.made.append(watcher)
+        return watcher
+
+    @property
+    def current(self) -> FakeWatcher:
+        return self.made[-1]

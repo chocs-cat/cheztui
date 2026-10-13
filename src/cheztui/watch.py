@@ -33,7 +33,8 @@ def counts(path: str | Path, source_dir: Path, targets: Iterable[Path]) -> bool:
     """Whether a change at `path` makes a refresh due (spec §5 *Which events count*).
 
     A path under the source dir counts unless a `.git` component lies below
-    it; elsewhere only a managed target itself counts, not a sibling.
+    it; elsewhere only a managed target itself counts, not a sibling. The
+    source dir is resolved whole (DEC-38).
     """
     source = Path(os.path.realpath(source_dir))
     return _counts(_resolved(path), source, frozenset(map(_resolved, targets)))
@@ -60,7 +61,7 @@ class Watcher:
         self.targets = tuple(targets)
         self.debounce_ms = debounce_ms
         self.on_due = on_due
-        # The source dir resolved whole: everything under it is compared resolved.
+        # The source dir resolved whole: everything under it is compared resolved (DEC-38).
         self._source = Path(os.path.realpath(source_dir))
         self._targets = frozenset(map(_resolved, self.targets))
         self._paused = False
