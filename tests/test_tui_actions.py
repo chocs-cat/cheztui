@@ -306,6 +306,7 @@ async def test_esc_in_the_preview_cancels_and_keeps_the_selection(tmp_path, root
         await select(pilot, ".mine")
         await pilot.press("r")
         await until_modal(pilot)
+        assert log_line(app) == ""  # preparing has ended, nothing has run (DEC-36)
         await pilot.press("escape")
         await settled(pilot)
         assert log_line(app) == "preview cancelled"

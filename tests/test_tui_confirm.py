@@ -214,6 +214,7 @@ async def test_a_mixed_selection_left_out_rows_and_directory_descendants(tmp_pat
         forget = await writes(app, fake).prepare("forget", [directory])
         await show(pilot, forget)
         assert entries(app) == [" forget", ">  src→ ~/.dir", "        ~/.dir/inner with ~/.dir"]
+        assert diff(app) == "(no diff)"  # its dry run printed nothing (DEC-36)
         assert part(app, "#preview-commands") == command(
             fake, "forget", "--force", str(home / ".dir")
         )

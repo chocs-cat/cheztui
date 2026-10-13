@@ -637,14 +637,15 @@ would run.
   highlighted as the list's current row is. With auto-commit off and stray
   files comes `warning: uncommitted files in the source tree:` and one
   path per line, indented two spaces; then the current entry's masked
-  diff, coloured and cut as in the detail, or `(no preview)` for an entry
-  with none. `j`/`k` move the current entry, stopping at either end, and
+  diff, coloured and cut as in the detail, `(no diff)` when its dry run
+  printed nothing, or `(no preview)` for an entry with none (DEC-36).
+  While a confirmable preview is open the log line is empty. `j`/`k` move the current entry, stopping at either end, and
   `J`/`K`, `PgUp`/`PgDn` scroll the modal. Apply-all's `space` ticks the
   current one, rebuilding the commands (`WritePlan.with_selection`);
   an excluded entry can't be ticked. The footer lists `enter Run` (`enter
   Dry run` under `-n`), `space Tick` for apply-all, `j/k Move`, `esc
-  Cancel`; with nothing ticked `enter` does nothing and the footer says
-  `nothing ticked`. `enter` closes the modal and runs the plan. `esc`
+  Cancel`; with nothing ticked `enter` does nothing and `nothing ticked`
+  takes `enter Run`'s place. `enter` closes the modal and runs the plan. `esc`
   closes it and runs nothing: the log line and session log say `preview
   cancelled`, and the selection stays. A blocked plan shows `✗ the source
   tree has uncommitted changes; commit or remove them first:` and the
@@ -663,8 +664,8 @@ would run.
 - **Running.** The log line says `running…` until the result; `esc` doesn't
   cancel a write (§5).
 - **Result.** One session-log entry per command result, in order, a failed
-  one followed by its whole masked stderr indented two spaces, a refused
-  one by its stray paths; then `not run: <action> <targets>` for each
+  one followed by its whole masked stderr indented two spaces (its error
+  when stderr is empty, DEC-36), a refused one by its stray paths; then `not run: <action> <targets>` for each
   command left unrun. The log line joins the command results' lines with
   `; ` (in the error colour if any failed), or shows `✗ <reason>` when
   nothing ran. A command's line, where `<targets>` is the one target in

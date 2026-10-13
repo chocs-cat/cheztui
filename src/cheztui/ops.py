@@ -684,7 +684,7 @@ def report(result: WriteResult) -> ResultReport:
     for r in result.results:
         diagnostic = None
         if r.outcome == "failed":
-            diagnostic = r.stderr.rstrip("\n") or r.error
+            diagnostic = r.stderr.rstrip("\n") or r.error  # DEC-36
         elif r.outcome == "refused" and r.stray:
             diagnostic = "\n".join(r.stray)
         entries.append((command_line(r), diagnostic))

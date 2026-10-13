@@ -615,3 +615,23 @@ TUI).
   rows do, so the two lists read the same way.
 
 *Where:* `docs/spec.md` §4 (Log line), §6 (Drift).
+
+## DEC-36: The preview's and the result's small edges (2026-10)
+
+Building the Drift actions (#42) met four edges spec §6 *Actions in the
+TUI* left open; these are the choices, written into it.
+
+- While a confirmable preview is open the log line is empty: the
+  preparation it said `preparing…` for has ended, and nothing has run.
+  A blocked plan's line stays, since it is the reason (DEC-35).
+- An entry whose dry run printed nothing shows `(no diff)`, as the detail
+  does, and `(no preview)` stays for an entry with no dry run (a merge, an
+  excluded row). The two mean different things: chezmoi was asked and had
+  nothing to say, or wasn't asked.
+- With nothing ticked, `nothing ticked` takes `enter Run`'s place at the
+  start of the footer, so the footer never offers a key that does nothing.
+- A failed command whose stderr is empty is logged with its short error
+  as the diagnostic, as a failed read is (spec §5 Diagnostics' `chezmoi
+  <action> exited <code>`), so every failure entry has a body.
+
+*Where:* `docs/spec.md` §6 (Drift, *Actions in the TUI*).

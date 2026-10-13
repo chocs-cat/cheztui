@@ -519,7 +519,7 @@ class CheztuiApp(App[None]):
             self._end_write()
             return
         if plan.needs_confirmation:
-            self.set_log_line("")
+            self.set_log_line("")  # the preparation has ended; nothing has run (DEC-36)
             chosen = await self.push_screen_wait(PreviewModal(plan, context=context))
             if chosen is None:
                 self.set_log_line(PREVIEW_CANCELLED)

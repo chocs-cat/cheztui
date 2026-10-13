@@ -151,7 +151,7 @@ class PreviewModal(ModalScreen[WritePlan | None]):
         if text is None:
             diff.update(NO_PREVIEW)
         elif not text:
-            diff.update(NO_DIFF)
+            diff.update(NO_DIFF)  # asked, and nothing to say (DEC-36)
         else:
             diff.update(diff_content(ops.cut_context(text, self.context)))
 
