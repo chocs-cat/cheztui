@@ -425,14 +425,17 @@ async def drift_body(
         text = _decode(await chezmoi.cat(row.target))
     else:
         text = await chezmoi.diff(row.target)
-    if not reveal:
-        masker = Masker(secrets, dest_dir)
-        reasons = await masking_reasons(chezmoi, masker, row.target, row.source, row.tags)
-        done = masker.mask(text, row.target, diff=not rendered, whole=bool(reasons))
-        text, masked = done.text, done.masked
-    else:
-        masked = False
-    return DriftBody(text if rendered else cut_context(text, context), masked)
+    if reveal:
+        return DriftBody(text if rendered else cut_context(text, context), False)
+    masker = Masker(secrets, dest_dir)
+    reasons = await masking_reasons(chezmoi, masker, row.target, row.source, row.tags)
+    done = masker.mask(text, row.target, diff=not rendered, whole=bool(reasons))
+    if rendered:
+        return DriftBody(done.text, done.masked)
+    # Masked is decided on what is shown: a value masked on a context line the
+    # cut drops leaves nothing to reveal (#40). The unmasked cut is transient.
+    shown = cut_context(done.text, context)
+    return DriftBody(shown, done.masked and shown != cut_context(text, context))
 
 
 # --- The write path (spec §5 Write flow; DEC-8, DEC-27 to DEC-30) ------------
@@ -532,8 +535,10 @@ class WritePlan:
 
     @property
     def needs_confirmation(self) -> bool:
-        """Interactive-only plans open no modal (DEC-4)."""
-        return any(not c.interactive for c in self.commands)
+        """Apply-all always does, even with nothing ticked, so its rows can be
+        ticked; otherwise interactive-only plans open no modal (spec §6 The
+        preview modal, DEC-4)."""
+        return self.apply_all or any(not c.interactive for c in self.commands)
 
     @property
     def dry_run(self) -> bool:
@@ -595,6 +600,108 @@ class WriteResult:
     @property
     def ok(self) -> bool:
         return self.refused is None and all(r.outcome in ("ok", "dry run") for r in self.results)
+
+
+# --- Result lines (spec §6 Drift *Result*, §8 Output; DEC-35) ----------------
+
+VERBS: dict[Action, str] = {
+    "apply": "applied",
+    "re-add": "re-added",
+    "forget": "forgot",
+    "edit": "edited",
+    "merge": "merged",
+    "add": "added",
+}
+
+
+def targets_text(targets: Sequence[Path]) -> str:
+    """The one target in `~` form, or `N targets`."""
+    return display_target(targets[0]) if len(targets) == 1 else f"{len(targets)} targets"
+
+
+def outcome_line(
+    action: Action,
+    targets: Sequence[Path],
+    *,
+    dry_run: bool,
+    commit: Commit | None,
+    pushed: bool | None,
+    state: CommitState | None,
+) -> str:
+    """A command that ran, or would have: committed, no commit, or dry run.
+
+    The lines `cheztui edit` and `add` print and the TUI's log line shows,
+    from this one function, so the two can't word a commit differently (DEC-35).
+    """
+    name = targets_text(targets)
+    if dry_run:
+        return f"would {action} {name} (dry run)"
+    if commit is not None:
+        push = "pushed" if pushed else "not pushed"
+        return f'{VERBS[action]} {name} → {commit.sha[:7]} "{commit.subject}" ({push})'
+    return f"{VERBS[action]} {name} ({state})"
+
+
+def failed(result: CommandResult) -> bool:
+    return result.outcome in ("failed", "refused") or result.reporting_error is not None
+
+
+def command_line(result: CommandResult) -> str:
+    """One command result's line (spec §6 *Result*'s table)."""
+    command = result.command
+    name = targets_text(command.targets)
+    if result.outcome == "failed":
+        return f"✗ {command.action} {name} failed: {result.error}"
+    if result.outcome == "refused":
+        return f"✗ {command.action} {name} refused: {result.error}"
+    if result.reporting_error is not None:
+        return (
+            f"✗ {command.action} {name} ran, but reading the result failed: "
+            f"{result.reporting_error}"
+        )
+    return outcome_line(
+        command.action,
+        command.targets,
+        dry_run=result.outcome == "dry run",
+        commit=result.commit,
+        pushed=result.pushed,
+        state=result.state,
+    )
+
+
+@dataclass(frozen=True)
+class ResultReport:
+    """A `WriteResult` as the TUI shows it (spec §6 *Result*)."""
+
+    line: str  # the log line; each failed part carries its own `✗`
+    failed: bool  # the log line takes the error colour
+    entries: tuple[tuple[str, str | None], ...]  # session-log entries: text and diagnostic
+
+
+def report(result: WriteResult) -> ResultReport:
+    """One entry per command result in order, a failed one with its whole masked
+    stderr, a refused one with its stray paths; then `not run:` per unrun command.
+    The log line joins the results' lines, or is `✗ <refused>` when nothing ran."""
+    entries: list[tuple[str, str | None]] = []
+    for r in result.results:
+        diagnostic = None
+        if r.outcome == "failed":
+            diagnostic = r.stderr.rstrip("\n") or r.error  # DEC-36
+        elif r.outcome == "refused" and r.stray:
+            diagnostic = "\n".join(r.stray)
+        entries.append((command_line(r), diagnostic))
+    if not result.results:
+        entries.append((f"✗ {result.refused}", None))
+    entries += [(f"not run: {c.action} {targets_text(c.targets)}", None) for c in result.unrun]
+    if not result.results:
+        return ResultReport(f"✗ {result.refused}", True, tuple(entries))
+    line = "; ".join(command_line(r) for r in result.results)
+    return ResultReport(line, any(failed(r) for r in result.results), tuple(entries))
+
+
+def left_out_line(entry: WriteEntry) -> str:
+    """An excluded entry of an interactive plan, for the session log (spec §6)."""
+    return f"left out of {entry.action}: {display_target(entry.target)} ({entry.excluded})"
 
 
 _T = TypeVar("_T")

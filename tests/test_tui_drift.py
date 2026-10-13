@@ -16,12 +16,14 @@ from textual.widgets import Static
 
 from cheztui.config import Config, SecretsConfig, UiConfig
 from cheztui.ops import DriftRow
+from cheztui.runner import Completed
 from cheztui.secrets import MASK
 from cheztui.tui.app import CheztuiApp
 from cheztui.tui.views.base import RowList
 from cheztui.tui.views.drift import DriftView
 from tests.conftest import Scratch, requires_chezmoi
 from tests.fake_chezmoi import FakeChezmoi
+from tests.fake_write import subcommand
 from tests.test_chezmoi_reads import HOME, ROOT, build_drift
 from tests.test_tui import TOKEN, make_app, settled, text
 from tests.test_tui_screens import palette_entries
@@ -483,6 +485,28 @@ async def test_a_failed_read_shows_and_logs_its_masked_error(tmp_path):
         assert TOKEN not in repr(app.session_log)
 
 
+async def test_a_failure_isnt_kept(tmp_path):
+    # Moving back reads the row again, and a second failure is logged again (#38).
+    fake = FakeChezmoi.drifted()
+    target = str(HOME / ".both file")
+
+    def fail_both(argv, env):
+        if argv[0] == "chezmoi" and subcommand(argv)[:1] == ("diff",) and argv[-1] == target:
+            return Completed(argv, 1, b"", b"chezmoi: locked\n")
+        return None
+
+    fake.reply(fail_both)
+    app = make_app(fake, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        assert body(app) == "✗ chezmoi exited 1: chezmoi: locked"
+        await move_to(pilot, ".gone")
+        await move_to(pilot, ".both file")
+        assert body(app) == "✗ chezmoi exited 1: chezmoi: locked"
+        assert sum(1 for c in fake.chezmoi_calls if c[:1] == ("diff",) and c[-1] == target) == 2
+        assert [e.text for e in app.session_log] == ["✗ chezmoi exited 1: chezmoi: locked"] * 2
+
+
 async def test_a_failure_is_logged_when_shown_not_when_the_refresh_ends(tmp_path):
     # The header's read is held while the body read fails: the failure is in
     # the session log before the refresh ends.
@@ -523,7 +547,7 @@ async def test_t_is_only_for_templates(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert not key_bar(app).startswith("t ")
+        assert "  t " not in key_bar(app)
         assert not any(e.startswith("Rendered") for e in await palette_entries(pilot))
         await pilot.press("escape")
         await pilot.press("t")
@@ -537,18 +561,18 @@ async def test_t_toggles_the_rendered_output(tmp_path):
     async with app.run_test() as pilot:
         await settled(pilot)
         await move_to(pilot, ".tmplfile")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
         assert body(app).endswith("@@ -1 +1,2 @@\n TMPL\n+MORE")
         await pilot.press("t")
         await settled(pilot)
         assert body(app) == "TMPL\nMORE"
         assert spans(detail(app)) == []  # plain
-        assert key_bar(app).startswith("t Diff  ")
+        assert "  t Diff  " in key_bar(app)
         assert ("cat", str(HOME / ".tmplfile")) in fake.chezmoi_calls
         await pilot.press("t")
         await settled(pilot)
         assert body(app).endswith("+MORE")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
 
 
 async def test_the_palette_names_t_by_what_is_showing(tmp_path):
@@ -557,7 +581,7 @@ async def test_the_palette_names_t_by_what_is_showing(tmp_path):
         await settled(pilot)
         await move_to(pilot, ".tmplfile")
         entries = await palette_entries(pilot)
-        assert entries[0] == "Rendered  t"
+        assert "Rendered  t" in entries
         await pilot.press(*"rendered", "enter")
         await settled(pilot)
         assert view(app).rendered
@@ -580,7 +604,7 @@ async def test_a_move_or_a_refresh_returns_to_the_diff(tmp_path, leave):
             await settled(pilot)
         assert not view(app).rendered
         assert body(app).endswith("+MORE")
-        assert key_bar(app).startswith("t Rendered  ")
+        assert "  t Rendered  " in key_bar(app)
 
 
 async def test_the_rendered_body_is_masked_as_a_body(tmp_path):
@@ -685,9 +709,11 @@ async def test_a_failed_reveal_keeps_its_diagnostic_masked(tmp_path):
         await settled(pilot)
         assert body(app) == f"✗ chezmoi exited 1: chezmoi: {MASK}"
         assert TOKEN not in repr(app.session_log)
-        await pilot.press("R")  # back to the kept, masked body
+        reads = calls(fake, "diff")
+        await pilot.press("R")  # back to the kept, masked body, with no new read
         await settled(pilot)
         assert f"+echo {MASK}" in body(app)
+        assert calls(fake, "diff") == reads
 
 
 async def test_the_whole_masked_body_reveals(tmp_path):

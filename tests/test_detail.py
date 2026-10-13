@@ -337,6 +337,22 @@ async def test_context_cuts_after_masking():
     assert body.masked
 
 
+async def test_masked_is_decided_on_what_the_cut_shows():
+    # A value masked only on a context line the cut drops: nothing to reveal (#40).
+    fake = FakeChezmoi.drifted()
+    unmasked = fake.diff[HOME / ".tool"].replace(" echo tool", f" echo {TOKEN}")
+    fake.diff[HOME / ".tool"] = unmasked
+    rows = await fixture_rows(fake)
+    body = await drift_body(fake.chezmoi(), SecretsConfig(), rows[".tool"], HOME, context=0)
+    assert (body.text, body.masked) == (cut_context(unmasked, 0), False)
+    assert TOKEN not in body.text
+    # With the token on the kept line it was masked where it shows.
+    fake.diff[HOME / ".tool"] = unmasked.replace("+echo more", f"+echo {TOKEN}")
+    body = await drift_body(fake.chezmoi(), SecretsConfig(), rows[".tool"], HOME, context=0)
+    assert body.masked
+    assert body.text.endswith(f"+echo {MASK}\n")
+
+
 async def test_rendered_is_the_body_masked_as_a_body_and_not_cut():
     fake = FakeChezmoi.drifted()
     fake.cat[HOME / ".tmplfile"] = f"TMPL\nMORE\ntoken: {TOKEN}\n".encode()

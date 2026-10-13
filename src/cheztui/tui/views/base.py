@@ -200,6 +200,11 @@ class ListDetail(Container, Generic[Row]):
             target = listing.highlighted + step
             listing.highlighted = max(0, min(target, listing.option_count - 1))
 
+    def clear_selection(self) -> None:
+        self.selected.clear()
+        if self.rows is not None:
+            self._render_rows()
+
     def toggle_selected(self) -> None:
         row = self.current()
         if row is None:

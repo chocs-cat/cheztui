@@ -396,6 +396,22 @@ async def test_interactive_only_plan_has_no_preview(home: Path):
         await fake.ops().prepare("edit", [row(home / "a"), row(home / "b")])
 
 
+async def test_apply_all_with_nothing_ticked_still_needs_confirmation(home: Path):
+    # Only you→ and both rows: nothing starts ticked, and the preview still
+    # opens so a row can be ticked (spec §6 The preview modal).
+    fake = FakeWrite(dest=home)
+    answer_previews(fake)
+    rows = [row(home / "b", "you", "re-add", columns="MM"), row(home / "x", "both", "merge")]
+    ops = fake.ops()
+    plan = await ops.prepare_apply_all(rows)
+    assert plan.commands == ()
+    assert plan.needs_confirmation
+    count = len(fake.log)
+    for confirmed in (False, True):
+        assert (await ops.execute(plan, confirmed=confirmed)).refused is not None
+    assert len(fake.log) == count
+
+
 async def test_apply_all_ticks_and_reselection(home: Path):
     fake = FakeWrite(dest=home)
     answer_previews(fake)

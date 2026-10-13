@@ -28,13 +28,17 @@ each depending only on the ones above it; they arrive with the milestones:
 
 The CLI and the TUI both go through `ops`, so put behaviour changes there.
 
-In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar) and
-its reads; `keys.py` declares every key once, and the Textual bindings, the
-key bar, help and the palette are all generated from it; `views/base.py` is
-the list and detail panes with the filter and the selection, which each view
-in `views/` fills (`drift.py` so far); `widgets/diff.py` colours a unified
-diff by line kind; `screens.py` holds help, the palette and the session
-log, and `settings.py` the settings screen.
+In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar),
+its reads and its one write worker, with the terminal runner
+(`run_in_terminal`, the app's `terminal_runner`) that runs edit, merge and
+`d` under `App.suspend()`; `keys.py` declares every key once, and the
+Textual bindings, the key bar, help and the palette are all generated from
+it; `views/base.py` is the list and detail panes with the filter and the
+selection, which each view in `views/` fills (`drift.py` so far, with the
+Drift actions' keys); `widgets/diff.py` colours a unified diff by line
+kind, and `widgets/confirm.py` is the preview modal over a `WritePlan`;
+`screens.py` holds help, the palette and the session log, and
+`settings.py` the settings screen.
 
 Every write goes through `ops.WriteOps` (spec §5 Write flow; DEC-8,
 DEC-27 to DEC-30), one instance per front end:
@@ -65,14 +69,18 @@ DEC-27 to DEC-30), one instance per front end:
   mode they never start.
 
 Plans and results hold masked text only: raw chezmoi output stays inside
-the write path. The scripted CLI commands drive `WriteOps`; the TUI's
-actions arrive with the rest of v0.1. Tests also drive `WriteOps` directly,
-with `tests/fake_write.py` for fakes and the scratch setup for the real
-binary.
+the write path. The scripted CLI commands and the Drift view's actions
+drive `WriteOps`, and both word a command's result with `ops.outcome_line`
+(DEC-35); the TUI only lays out, suspends and logs. Tests also drive
+`WriteOps` directly, with `tests/fake_write.py` for fakes and the scratch
+setup for the real binary.
 
 TUI tests run the app with `App.run_test()` on `tests/fake_chezmoi.py`,
 which extends the write path's fake to answer chezmoi's and git's reads
-from a canned state; its `drifted()` state replays the recorded fixtures.
+from a canned state; its `drifted()` state replays the recorded fixtures,
+and `drifted(root)` puts them under a real root with the home's files
+created, so eligibility sees what chezmoi left. Tests replace the app's
+`terminal_runner`, since a headless run can't suspend.
 Snapshot tests (pytest-textual-snapshot) keep the expected screens as SVGs
 in `tests/__snapshots__/`. After a deliberate change to what a screen
 shows, rewrite them with `uv run pytest --snapshot-update` and review the

@@ -215,15 +215,18 @@ def _script_output(result: ops.ScriptResult | ops.Refusal, as_json: bool, action
             _error(result.error)
         elif result.skipped:
             print(f"skipped {name}: already contains {result.skip_text!r}, leaving unchanged")
-        elif result.dry_run:
-            print(f"would {action} {name} (dry run)")
-        elif result.commit is not None:
-            pushed = "pushed" if result.pushed else "not pushed"
-            verb = "edited" if action == "edit" else "added"
-            print(f'{verb} {name} → {result.commit.sha[:7]} "{result.commit.subject}" ({pushed})')
         else:
-            verb = "edited" if action == "edit" else "added"
-            print(f"{verb} {name} ({result.state})")
+            # The TUI's log-line form, from the same code (§8 Output, DEC-35).
+            print(
+                ops.outcome_line(
+                    "edit" if action == "edit" else "add",
+                    (result.target,),
+                    dry_run=result.dry_run,
+                    commit=result.commit,
+                    pushed=result.pushed,
+                    state=result.state,
+                )
+            )
     return EXIT_FAILED if result.error is not None or result.verified is False else EXIT_OK
 
 

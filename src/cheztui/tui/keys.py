@@ -64,7 +64,11 @@ GLOBAL: tuple[Key, ...] = (
     Key(",", "Settings", (("comma", "settings"),), palette=True),
     Key("?", "Help", (("question_mark", "help"),), label="Help", bar=3, palette=True),
     Key("q", "Quit", (("q", "quit"),), palette=True),
-    Key("esc", "Cancel the read in progress", (("escape", "cancel_read"),)),
+    Key(
+        "esc",
+        "Cancel the preview being prepared, or the read in progress",
+        (("escape", "cancel_read"),),
+    ),
     Key("tab", "Switch focus between list and detail (narrow layout)", (("tab", "toggle_focus"),)),
 )
 

@@ -5,13 +5,22 @@ worker (DEC-6): the version check once it passes, then the Drift read and
 the header's read at once. A failure clears what that read feeds, and its
 diagnostic is masked before the log line or the session log sees it
 (DEC-30, DEC-33).
+
+Writes run in one worker of their own (spec §6 Drift, *Actions in the
+TUI*; DEC-35): prepare through the app's one `ops.WriteOps`, show the
+preview modal when the plan needs confirming or is blocked, execute with
+the terminal runner for edit and merge, log the result, clear the
+selection and refresh. What a plan holds and how a result is worded are
+`ops.py`'s; the app lays out, suspends and logs.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+import os
+import subprocess
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,16 +36,18 @@ from cheztui import ops
 from cheztui.chezmoi import Chezmoi, ChezmoiError, ChezmoiFailed
 from cheztui.config import Config, ConfigError, load
 from cheztui.git import GitError, GitFailed
-from cheztui.runner import Runner, run_subprocess
+from cheztui.runner import Completed, Runner, run_subprocess
 from cheztui.secrets import Masker
 from cheztui.tui import keys
 from cheztui.tui.screens import HelpScreen, Palette, SessionLogScreen, help_text
 from cheztui.tui.settings import SettingsScreen, launch_editor
 from cheztui.tui.views.base import Detail, ListDetail, RowList
 from cheztui.tui.views.drift import DriftView
+from cheztui.tui.widgets.confirm import PreviewModal
 
 THEMES = frozenset(BUILTIN_THEMES)  # the themes `ui.theme` may name (spec §9)
 READING = "reading chezmoi…"
+BLOCKED = "the source tree has uncommitted changes"
 
 
 def _action_name(action: str) -> str:
@@ -45,6 +56,9 @@ def _action_name(action: str) -> str:
 
 _FRAME_ACTIONS = frozenset(_action_name(a) for k in keys.GLOBAL for _, a in k.bindings)
 CANCELLED = "refresh cancelled"
+PREPARING = "preparing…"
+RUNNING = "running…"
+PREVIEW_CANCELLED = "preview cancelled"
 
 
 @dataclass(frozen=True)
@@ -105,11 +119,18 @@ class CheztuiApp(App[None]):
         self.theme = config.ui.theme
         self.now: Callable[[], datetime] = datetime.now  # the session log's clock
         self.launch_editor: Callable[[Path], None] = launch_editor  # tests replace it
+        # Edit and merge run here, the terminal handed over (spec §10); tests replace it.
+        self.terminal_runner: Runner = self.run_in_terminal
+        # One for the app: its lock serializes cheztui's writes (DEC-27).
+        self.writes = ops.WriteOps(chezmoi, config, git_runner=git_runner)
         self.session_log: list[LogEntry] = []
         self.repo: ops.RepoState | None = None
         self.reading = False
+        self.writing: str | None = None  # PREPARING or RUNNING while a write is under way
         self._version_ok = False
         self._read_id = 0
+        self._write_id = 0
+        self._keep_line = False  # the refresh after a write leaves its result showing
 
     # --- Layout -------------------------------------------------------------
 
@@ -214,8 +235,11 @@ class CheztuiApp(App[None]):
 
     # --- Log line and session log ---------------------------------------------
 
-    def set_log_line(self, text: str, *, error: bool = False) -> None:
-        line = Content.styled(f"✗ {text}", "$error") if error else Content(text)
+    def set_log_line(self, text: str, *, error: bool = False, mark: bool = True) -> None:
+        """Show `text`; an error is `✗ <text>` in the error colour, or without the
+        `✗` (`mark=False`) for a line whose parts carry their own (spec §6 *Result*)."""
+        shown = f"✗ {text}" if error and mark else text
+        line = Content.styled(shown, "$error") if error else Content(shown)
         self.query_one("#log-line", Static).update(line)
 
     def record(self, text: str, diagnostic: str | None = None) -> None:
@@ -230,14 +254,18 @@ class CheztuiApp(App[None]):
     def action_view(self, name: str) -> None:
         """Switch view; Drift is the only one so far (DEC-20)."""
 
-    def start_read(self) -> None:
+    def start_read(self, *, after_write: bool = False) -> None:
         """Read chezmoi; a read still running is cancelled by this one.
 
-        The detail's bodies are read again too (spec §6 Detail reads).
+        The detail's bodies are read again too (spec §6 Detail reads). The
+        refresh after a write leaves the write's result on the log line,
+        unless it fails or is cancelled (spec §4 Log line, DEC-35).
         """
         self._read_id += 1
         self.reading = True
-        self.set_log_line(READING)
+        self._keep_line = after_write
+        if not after_write:
+            self.set_log_line(READING)
         self.view.reset_detail()
         self.run_worker(self._read(self._read_id), group="read", exclusive=True)
 
@@ -258,7 +286,9 @@ class CheztuiApp(App[None]):
     def available(self, action: str) -> bool:
         """Whether a frame action works now, whatever screen is on top."""
         if action == "cancel_read":
-            return self.reading
+            return self.reading or self.writing == PREPARING
+        if action == "refresh":
+            return self.writing is None  # the write's own refresh follows (DEC-35)
         if action in ("filter", "select"):
             return self.view.has_rows
         if action == "toggle_focus":
@@ -297,6 +327,7 @@ class CheztuiApp(App[None]):
     def apply_settings(self) -> None:
         """Make the theme and the layout follow the settings at once (spec §9)."""
         self.theme = self.settings.ui.theme
+        self.writes.config = self.settings  # the write path's masking reads it
         self.update_layout()
 
     def edit_config(self) -> str | None:
@@ -357,7 +388,11 @@ class CheztuiApp(App[None]):
         self._render_key_bar()
 
     def action_cancel_read(self) -> None:
-        """`esc`: cancel the read; the earlier data stays (spec §5)."""
+        """`esc`: cancel a preview being prepared, else the read; the earlier data
+        stays (spec §5, §6 *Prepare*)."""
+        if self.writing == PREPARING:
+            self._cancel_write()
+            return
         if not self.reading:
             return
         self.workers.cancel_group(self, "read")
@@ -425,9 +460,124 @@ class CheztuiApp(App[None]):
         self.reading = False
         if failures:
             self.set_log_line(failures[0][0], error=True)
-        else:
+        elif not self._keep_line:
             self.set_log_line("")
+        self._keep_line = False
         self._render_key_bar()
+
+    # --- Writes (spec §6 Drift, *Actions in the TUI*; DEC-35) ---------------------
+
+    def start_write(self, prepare: Callable[[], Awaitable[ops.WritePlan]]) -> None:
+        """Prepare a plan (`prepare` holds the rows taken when the key was pressed),
+        preview it, run it, report it."""
+        if self.writing is not None:
+            return
+        self._write_id += 1
+        self.writing = PREPARING
+        self.set_log_line(PREPARING)
+        self._render_key_bar()
+        self.run_worker(self._write(prepare, self._write_id), group="write", exclusive=True)
+
+    def _cancel_write(self) -> None:
+        """`esc` while preparing: nothing has written yet (spec §5)."""
+        self.workers.cancel_group(self, "write")
+        self._write_id += 1
+        self._end_write()
+        self.set_log_line(PREVIEW_CANCELLED)
+        self.record(PREVIEW_CANCELLED)
+
+    def _end_write(self) -> None:
+        self.writing = None
+        self._render_key_bar()
+
+    async def _write(self, prepare: Callable[[], Awaitable[ops.WritePlan]], write_id: int) -> None:
+        # Diagnostics that can't be assigned to a target: line level, no never_mask (DEC-30).
+        masker = Masker(self.settings.secrets, Path("/"))
+        try:
+            plan = await ops.sanitized(prepare(), masker, whole=False)
+        except (ChezmoiError, GitError) as e:
+            if write_id != self._write_id:
+                return
+            message = ops.mask_diagnostic(masker, ops.failure_message(e), whole=False)
+            stderr = e.stderr if isinstance(e, ChezmoiFailed | GitFailed) else ""
+            self.set_log_line(message, error=True)
+            self.record(f"✗ {message}", stderr.rstrip("\n") or message)
+            self._end_write()
+            return
+        if write_id != self._write_id:
+            return
+        context = self.settings.ui.diff_context
+        if plan.blocked:
+            # Logged as the modal opens, so it outlives the modal (DEC-35).
+            if plan.preflight.blocked:
+                line, diagnostic = BLOCKED, "\n".join(plan.preflight.stray)
+            else:
+                line, diagnostic = f"preview failed: {plan.error}", plan.diagnostic
+            self.set_log_line(line, error=True)
+            self.record(f"✗ {line}", diagnostic.rstrip("\n") or None)
+            await self.push_screen_wait(PreviewModal(plan, context=context))
+            self._end_write()
+            return
+        if plan.needs_confirmation:
+            self.set_log_line("")  # the preparation has ended; nothing has run (DEC-36)
+            chosen = await self.push_screen_wait(PreviewModal(plan, context=context))
+            if chosen is None:
+                self.set_log_line(PREVIEW_CANCELLED)
+                self.record(PREVIEW_CANCELLED)
+                self._end_write()
+                return
+            plan = chosen
+        else:
+            # An interactive plan opens no modal (DEC-4): its left-out rows are logged.
+            for entry in plan.entries:
+                if entry.excluded is not None:
+                    self.record(ops.left_out_line(entry))
+        self.writing = RUNNING
+        self.set_log_line(RUNNING)
+        result = await self.writes.execute(
+            plan, confirmed=True, interactive_runner=self.terminal_runner
+        )
+        shown = ops.report(result)
+        for text, diagnostic in shown.entries:
+            self.record(text, diagnostic)
+        self.set_log_line(shown.line, error=shown.failed, mark=False)
+        # After every execution: the selection goes and the view refreshes (DEC-35).
+        self.view.clear_selection()
+        self._end_write()
+        self.start_read(after_write=True)
+
+    def full_diff(self, target: Path) -> None:
+        """`d`: chezmoi's own diff in the terminal, its pager and diff command applying.
+
+        A read, not a write: no pre-flight, and it runs under `-n` (spec §6 `d`).
+        """
+        self.run_worker(self._full_diff(target), group="terminal")
+
+    async def _full_diff(self, target: Path) -> None:
+        done = await self.chezmoi.run("diff", str(target), check=False, runner=self.terminal_runner)
+        if done.returncode != 0:
+            line = f"chezmoi diff exited {done.returncode}"
+            self.set_log_line(line, error=True)
+            self.record(f"✗ {line}")
+
+    async def run_in_terminal(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: bytes | None = None,
+    ) -> Completed:
+        """The terminal runner: the command with the terminal under `App.suspend()`,
+        `env` merged over the environment; its exit code, and no output (spec §10)."""
+        with contextlib.ExitStack() as stack:
+            # A headless test run can't suspend; the tests replace this runner.
+            with contextlib.suppress(SuspendNotSupported):
+                stack.enter_context(self.suspend())
+            done = subprocess.run(
+                list(argv), cwd=cwd, env={**os.environ, **(env or {})}, check=False
+            )
+        return Completed(tuple(argv), done.returncode, b"", b"")
 
 
 def _joined(parts: list[Content], separator: str) -> Content:

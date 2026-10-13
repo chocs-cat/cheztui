@@ -15,6 +15,7 @@ scratch root is replaced with `/scratch`, so no machine path is committed;
 | `state-dump.json` | `chezmoi state dump --format=json` |
 | `dump-config.json` | `chezmoi dump-config --format=json` |
 | `diff.json` | `chezmoi diff --no-pager --color=false --use-builtin-diff <target>` for each status row, keyed by the target |
+| `preview.json` | the write previews' dry runs (`ops.PREVIEW_FLAGS`: `--dry-run --verbose --no-pager --color=false --use-builtin-diff`): `apply --force --recursive=false <target>` for each status row, and `re-add --recursive=false <target>` for each `you→` row whose target is a file, keyed by the action, then the target. They run before anything writes |
 
 Every command also runs with `--no-tty` and scratch `--config`, `--source`
 and `--destination`.

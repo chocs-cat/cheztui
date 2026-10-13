@@ -58,8 +58,22 @@ async def test_help_lists_the_global_keys_in_the_tables_order(tmp_path):
         assert isinstance(app.screen, HelpScreen)
         lines = screen_text(app).splitlines()
         # The view's section first, then a blank line, then the global keys.
-        assert lines[:4] == ["Drift", "t  Toggle the diff and the rendered output", "", "Global"]
-        lines = lines[4:]
+        blank = lines.index("")
+        assert lines[0] == "Drift"
+        assert [line.split()[0] for line in lines[1:blank]] == [
+            "enter",
+            "a",
+            "r",
+            "m",
+            "e",
+            "d",
+            "t",
+            "M",
+            "x",
+            "A",
+        ]
+        assert lines[blank + 1] == "Global"
+        lines = lines[blank + 2 :]
         shown = [line.split("  ")[0].strip() for line in lines]
         assert shown[: len(GLOBAL_ORDER)] == GLOBAL_ORDER
         # Every declared binding is there, with its description.
@@ -106,7 +120,7 @@ async def test_key_bar_ends_with_help(tmp_path):
     app = make_app(FakeChezmoi.drifted(), tmp_path)
     async with app.run_test() as pilot:
         await settled(pilot)
-        assert text(app, "#key-bar") == "space Select  / Filter  ? Help"
+        assert text(app, "#key-bar").endswith("  ? Help")
 
 
 async def test_key_bar_in_sync_is_help_alone(tmp_path):
@@ -142,7 +156,14 @@ async def test_palette_lists_what_works_on_drift(tmp_path):
     async with app.run_test() as pilot:
         await settled(pilot)
         entries = await palette_entries(pilot)
+        # The view's actions that work on `.both file` (targets missing here), then the frame's.
         assert entries == [
+            "Fix  enter",
+            "Apply  a",
+            "Edit  e",
+            "Full diff  d",
+            "Forget  x",
+            "Apply all  A",
             "Filter  /",
             "Select  space",
             "Refresh  g",
