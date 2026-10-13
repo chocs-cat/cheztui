@@ -20,11 +20,11 @@ shows a template's rendered output, `R` reveals), with filter, selection,
 help, a command palette, the session log and settings. Its keys run the
 fixes: `enter` the row's default fix, `a` apply, `r` re-add, `m` merge, `e`
 edit the source, `d` chezmoi's own diff, and, off the key bar but in help
-and the palette, `M` merge the selection, `x` forget and `A` apply all. A fix shows a preview (the exact
-command and each target's dry run) and runs on `enter`; edit and merge go
-straight to your editor or merge tool. The log line then names the commit
-chezmoi made and whether it pushed. Watching for changes arrives with the
-rest of v0.1. The design is in
+and the palette, `M` merge the selection, `x` forget and `A` apply all. A
+fix shows a preview (the exact command and each target's dry run) and runs
+on `enter`; edit and merge go straight to your editor or merge tool. The
+log line then names the commit chezmoi made and whether it pushed.
+Watching for changes arrives with the rest of v0.1. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
 
