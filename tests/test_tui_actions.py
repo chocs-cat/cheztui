@@ -1,8 +1,10 @@
 """The Drift view's actions (spec §6 Drift, *Actions in the TUI*; DEC-4, DEC-35).
 
-Every test runs the app on `FakeChezmoi.drifted(root)`, whose home has real
-files, with the terminal runner replaced by a recording fake: a headless run
-can't suspend.
+Every test but the ones marked `requires_chezmoi` runs the app on
+`FakeChezmoi.drifted(root)`, whose home has real files, with the terminal
+runner replaced by a recording fake: a headless run can't suspend. The live
+ones run the real chezmoi in the scratch setup and don't reach the terminal
+runner.
 """
 
 from __future__ import annotations
@@ -13,14 +15,17 @@ from pathlib import Path
 import pytest
 from textual.pilot import Pilot
 
+from cheztui.config import Config
 from cheztui.runner import Completed
 from cheztui.secrets import MASK
 from cheztui.tui.app import CheztuiApp
 from cheztui.tui.screens import HelpScreen, SessionLogScreen
 from cheztui.tui.views.drift import DriftView
 from cheztui.tui.widgets.confirm import PreviewModal
+from tests.conftest import Scratch, requires_chezmoi
 from tests.fake_chezmoi import FakeChezmoi
 from tests.fake_write import subcommand
+from tests.test_chezmoi_reads import build_drift
 from tests.test_tui import TOKEN, make_app, settled, styles, text
 from tests.test_tui_drift import move_to
 from tests.test_tui_screens import palette_entries
@@ -573,3 +578,88 @@ async def test_the_session_log_screen_shows_results(tmp_path, root):
         await settled(pilot)
         await pilot.press("l")
         assert isinstance(app.screen, SessionLogScreen)
+
+
+# --- `d` (spec §6 `d`) ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_d_runs_chezmoi_diff_in_the_terminal(tmp_path, root, dry_run):
+    app, fake, terminal = drift_app(root, tmp_path, dry_run=dry_run)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".mine")
+        await pilot.press("d")
+        await settled(pilot)
+        flags = ("--dry-run",) if dry_run else ()
+        assert terminal.calls == [
+            ("chezmoi", "--no-tty", *flags, "diff", str(root / "home" / ".mine"))
+        ]
+        # No pre-flight: git status ran once, for the header's read.
+        assert sum(1 for c in fake.log if c[0] == "git" and c[3:4] == ("status",)) == 1
+
+
+async def test_d_with_a_zero_exit_changes_nothing(tmp_path, root):
+    app, fake, terminal = drift_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await pilot.press("d")
+        await settled(pilot)
+        assert len(terminal.calls) == 1
+        assert log_line(app) == ""
+        assert app.session_log == []
+        assert statuses(fake) == 1  # no refresh follows
+
+
+async def test_d_with_a_non_zero_exit_says_so(tmp_path, root):
+    app, fake, terminal = drift_app(root, tmp_path)
+    terminal.code = 2
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await pilot.press("d")
+        await settled(pilot)
+        assert log_line(app) == "✗ chezmoi diff exited 2"
+        assert logged(app) == ["✗ chezmoi diff exited 2"]
+        assert statuses(fake) == 1
+
+
+# --- Live: the installed chezmoi -----------------------------------------------------------
+
+
+def live_app(scratch: Scratch) -> CheztuiApp:
+    build_drift(scratch)
+    scratch.commit_all("source changes")  # the drift stays; the tree is clean
+    scratch.set_auto_commit(True)
+    return CheztuiApp(Config(scratch.root / "cheztui.toml"), scratch.chezmoi())
+
+
+@requires_chezmoi
+async def test_live_re_add_commits(scratch: Scratch):
+    app = live_app(scratch)
+    before = scratch.git("rev-parse", "HEAD").stdout.strip()
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".mine")
+        await pilot.press("r")
+        await until_modal(pilot)
+        await pilot.press("enter")
+        await settled(pilot)
+        head = scratch.git("log", "-1", "--format=%H%x00%s").stdout.strip().split("\0")
+        assert head[0] != before  # chezmoi's auto-commit
+        assert (scratch.source / "dot_mine").read_text() == "mine\nedited in home\n"
+        assert log_line(app) == f're-added ~/.mine → {head[0][:7]} "{head[1]}" (not pushed)'
+        assert "~/.mine" not in [view(app).label(r) for r in view(app).rows or ()]
+
+
+@requires_chezmoi
+async def test_live_apply_writes_the_target(scratch: Scratch):
+    app = live_app(scratch)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await move_to(pilot, ".tool")
+        await pilot.press("a")
+        await until_modal(pilot)
+        await pilot.press("enter")
+        await settled(pilot)
+        assert (scratch.home / ".tool").read_text() == "#!/bin/sh\necho tool\necho more\n"
+        assert log_line(app) == "applied ~/.tool (no commit)"

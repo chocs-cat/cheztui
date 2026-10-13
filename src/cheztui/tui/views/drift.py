@@ -374,6 +374,9 @@ class DriftView(ListDetail[DriftRow]):
 
     def action_full_diff(self) -> None:
         """`d`: chezmoi's own diff in the terminal (spec §6 `d`)."""
+        row = self.current()
+        if row is not None and self.can_write("full_diff"):
+            self.cheztui.full_diff(row.target)
 
     def key_label(self, key: Key) -> str:
         if key is TOGGLE:

@@ -249,8 +249,7 @@ class CheztuiApp(App[None]):
     # --- Reads (spec §5 Reads in the TUI; DEC-33) -------------------------------
 
     def action_refresh(self) -> None:
-        if self.writing is None:
-            self.start_read()
+        self.start_read()
 
     def action_view(self, name: str) -> None:
         """Switch view; Drift is the only one so far (DEC-20)."""
@@ -546,6 +545,20 @@ class CheztuiApp(App[None]):
         self.view.clear_selection()
         self._end_write()
         self.start_read(after_write=True)
+
+    def full_diff(self, target: Path) -> None:
+        """`d`: chezmoi's own diff in the terminal, its pager and diff command applying.
+
+        A read, not a write: no pre-flight, and it runs under `-n` (spec §6 `d`).
+        """
+        self.run_worker(self._full_diff(target), group="terminal")
+
+    async def _full_diff(self, target: Path) -> None:
+        done = await self.chezmoi.run("diff", str(target), check=False, runner=self.terminal_runner)
+        if done.returncode != 0:
+            line = f"chezmoi diff exited {done.returncode}"
+            self.set_log_line(line, error=True)
+            self.record(f"✗ {line}")
 
     async def run_in_terminal(
         self,
