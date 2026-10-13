@@ -30,6 +30,7 @@ from tests.fake_write import subcommand
 from tests.test_chezmoi_reads import build_drift
 from tests.test_tui import TOKEN, make_app, styles, text
 from tests.test_tui import settled as workers_done
+from tests.test_tui_confirm import footer
 from tests.test_tui_drift import move_to
 from tests.test_tui_screens import palette_entries
 
@@ -583,6 +584,53 @@ async def test_apply_all_lists_every_row_whatever_the_filter_and_selection(tmp_p
         modal = await until_modal(pilot)
         assert len(modal.plan.entries) == 6
         assert sum(e.selected for e in modal.plan.entries) == 3  # src→ and run
+
+
+def only_local_changes(root: Path) -> str:
+    """The recorded status with only its you→ and both rows."""
+    lines = FakeChezmoi.drifted(root).status.splitlines(keepends=True)
+    return "".join(line for line in lines if Path(line[3:].rstrip("\n")).name in KEPT)
+
+
+KEPT = (".mine", ".both file")
+
+
+async def test_apply_all_with_nothing_ticked_opens_the_preview(tmp_path, root):
+    # The preview is where apply-all's rows get ticked (spec §6 The preview modal).
+    app, fake, _ = drift_app(root, tmp_path, status=only_local_changes(root))
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        assert {r.target.name for r in view(app).shown} == set(KEPT)
+        await pilot.press("A")
+        modal = await until_modal(pilot)
+        assert [(e.target.name, e.selected) for e in modal.plan.entries] == [
+            (".both file", False),
+            (".mine", False),
+        ]
+        assert footer(app) == "nothing ticked  space Tick  j/k Move  esc Cancel"
+        assert writes(fake) == []
+        assert "nothing is selected" not in log_line(app)
+        await pilot.press("j", "space", "enter")
+        await settled(pilot)
+        home = root / "home"
+        assert writes(fake) == [("apply", "--force", "--recursive=false", str(home / ".mine"))]
+        assert logged(app) == ["applied ~/.mine (no commit)"]
+
+
+async def test_esc_in_an_apply_all_with_nothing_ticked_cancels(tmp_path, root):
+    app, fake, _ = drift_app(root, tmp_path, status=only_local_changes(root))
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await select(pilot, ".mine")
+        await pilot.press("A")
+        await until_modal(pilot)
+        await pilot.press("escape")
+        await settled(pilot)
+        assert log_line(app) == "preview cancelled"
+        assert logged(app) == ["preview cancelled"]
+        assert view(app).selected == {root / "home" / ".mine"}
+        assert writes(fake) == []
+        assert statuses(fake) == 1  # no refresh
 
 
 async def test_the_session_log_screen_shows_results(tmp_path, root):

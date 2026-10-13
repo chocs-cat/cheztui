@@ -535,8 +535,10 @@ class WritePlan:
 
     @property
     def needs_confirmation(self) -> bool:
-        """Interactive-only plans open no modal (DEC-4)."""
-        return any(not c.interactive for c in self.commands)
+        """Apply-all always does, even with nothing ticked, so its rows can be
+        ticked; otherwise interactive-only plans open no modal (spec §6 The
+        preview modal, DEC-4)."""
+        return self.apply_all or any(not c.interactive for c in self.commands)
 
     @property
     def dry_run(self) -> bool:
