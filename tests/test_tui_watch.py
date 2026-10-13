@@ -18,6 +18,7 @@ from cheztui.config import Config, RefreshConfig
 from cheztui.runner import Completed
 from cheztui.tui.app import CheztuiApp
 from cheztui.tui.settings import SettingsScreen
+from cheztui.tui.views.base import ListDetail
 from cheztui.tui.widgets.confirm import PreviewModal
 from tests.fake_chezmoi import FakeChezmoi
 from tests.fake_write import is_write, subcommand
@@ -501,6 +502,18 @@ async def test_a_failing_watcher_says_so_and_g_restarts_it(tmp_path, root, watch
         assert len(watchers.made) == 2  # the same set, started again
         assert watchers.current.targets == watchers.made[0].targets
         assert watchers.current.running
+
+
+async def test_a_refresh_due_while_quitting_does_nothing(tmp_path, root, watchers: Watchers):
+    # The views go before the watcher's worker is cancelled.
+    app, fake = watch_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+    reads = statuses(fake)
+    watchers.current.due()
+    app.on_list_detail_changed(ListDetail.Changed())  # a read's, ending as the app closed
+    assert statuses(fake) == reads
+    assert not app.reading
 
 
 @pytest.mark.parametrize("key", ["q", None])

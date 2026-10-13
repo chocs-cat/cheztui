@@ -3,8 +3,8 @@
 Events are slow and unordered, on macOS CI most of all, so no test sleeps a
 fixed time: positives poll for their condition, and a negative ("this
 didn't refresh") is shown by changing a sentinel afterwards and waiting for
-its one refresh, so the count is checked once everything before it has
-had its chance to arrive.
+the refresh after its event arrives, so the count is checked once
+everything before it has had its chance to arrive.
 
 `Watchers` makes `FakeWatcher`s; conftest installs it as the default
 watcher factory, so a TUI test watches nothing real unless it asks to.
@@ -16,6 +16,10 @@ import asyncio
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
+
+import pytest
+
+from cheztui import watch
 
 TIMEOUT = 15.0  # seconds; generous for macOS CI
 
@@ -63,14 +67,49 @@ async def ready(probe: Path, count: Callable[[], int], debounce_ms: int) -> None
     await quiet(count, debounce_ms)
 
 
-async def after_sentinel(
-    sentinel: Path, count: Callable[[], int], expected: int, debounce_ms: int
-) -> None:
-    """Change `sentinel` and wait for the count to reach `expected`, then for
-    quiet, so the caller's exact assertion catches a late extra."""
+class Events:
+    """Every path watchfiles reported to the real watcher, paused or not, each
+    with `count()` as its batch arrived: a dropped event's arrival is then
+    something to wait for, not a sleep. Tests set `count` to what they count."""
+
+    def __init__(self) -> None:
+        self.arrived: list[tuple[str, int]] = []
+        self.count: Callable[[], int] = lambda: 0
+
+    def saw(self, name: str, since: int = 0) -> int | None:
+        """The count when an event on a path named `name` arrived, from entry `since` on."""
+        return next((n for p, n in self.arrived[since:] if Path(p).name == name), None)
+
+    def clear(self) -> None:
+        self.arrived.clear()
+
+
+def record_events(monkeypatch: pytest.MonkeyPatch) -> Events:
+    """Record what watchfiles reports, before the watcher sees it."""
+    events = Events()
+    real = watch.awatch
+
+    async def recording(*args, **kwargs):
+        async for changes in real(*args, **kwargs):
+            now = events.count()
+            events.arrived.extend((p, now) for _, p in changes)
+            yield changes
+
+    monkeypatch.setattr(watch, "awatch", recording)
+    return events
+
+
+async def after_sentinel(sentinel: Path, events: Events, debounce_ms: int) -> None:
+    """Change `sentinel` and wait for the refresh after its event arrives, then
+    for quiet. An extra refresh from earlier can't stand in for the
+    sentinel's, so the caller's exact count catches it."""
+    mark = len(events.arrived)
     sentinel.write_text(f"sentinel {time.monotonic()}\n")
-    await eventually(lambda: count() >= expected)
-    await quiet(count, debounce_ms)
+    await eventually(lambda: events.saw(sentinel.name, mark) is not None)
+    at = events.saw(sentinel.name, mark)
+    assert at is not None
+    await eventually(lambda: events.count() > at)
+    await quiet(events.count, debounce_ms)
 
 
 class FakeWatcher:

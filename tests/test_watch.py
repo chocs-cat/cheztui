@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,7 +19,7 @@ import pytest
 from cheztui import ops, watch
 from cheztui.watch import Watcher, counts
 from tests.conftest import Scratch, requires_chezmoi
-from tests.watching import after_sentinel, eventually, quiet, ready
+from tests.watching import Events, after_sentinel, eventually, quiet, ready, record_events
 
 DEBOUNCE = 100
 
@@ -115,6 +115,7 @@ def test_watch_imports_neither_textual_nor_chezmoi():
 class Running:
     """A `Watcher` running in a task, counting its `on_due` calls."""
 
+    events: Events
     source: Path
     home: Path
     targets: list[Path]
@@ -123,7 +124,8 @@ class Running:
     watcher: Watcher = field(init=False)
     task: asyncio.Task[None] = field(init=False)
 
-    def start(self) -> None:
+    def __post_init__(self) -> None:
+        self.events.count = self.count
         self.watcher = Watcher(self.source, self.targets, self.debounce_ms, self.on_due)
         self.task = asyncio.ensure_future(self.watcher.run())
 
@@ -137,11 +139,16 @@ class Running:
         await ready(self.home / ".probe", self.count, self.debounce_ms)
         self.due = 0
 
-    async def sentinel(self, expected: int) -> None:
-        await after_sentinel(self.home / ".sentinel", self.count, expected, self.debounce_ms)
+    async def sentinel(self) -> None:
+        await after_sentinel(self.home / ".sentinel", self.events, self.debounce_ms)
+
+    async def stop(self) -> None:
+        self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
 
 
 def layout(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
+    # tmp_path unresolved: on macOS it is behind /var → /private/var.
     source = tmp_path / "source"
     (source / ".git").mkdir(parents=True)
     home = tmp_path / "home"
@@ -152,37 +159,52 @@ def layout(tmp_path: Path) -> tuple[Path, Path, list[Path]]:
     return source, home, [*targets, home / "sub" / ".managed-elsewhere"]
 
 
+Start = Callable[..., Awaitable[Running]]
+
+
 @pytest.fixture
-async def running(tmp_path: Path) -> AsyncIterator[Running]:
-    # tmp_path unresolved: on macOS it is behind /var → /private/var.
-    source, home, targets = layout(tmp_path)
-    r = Running(source, home, targets)
-    r.start()
-    await r.ready()
-    yield r
-    r.task.cancel()
-    await asyncio.gather(r.task, return_exceptions=True)
+async def start(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Start]:
+    """Start a watcher on `layout`'s dirs (`source`, `extra` targets and
+    `debounce_ms` changing them) and wait for it to be live; stop it after."""
+    events = record_events(monkeypatch)
+    made: list[Running] = []
+
+    async def make(
+        *, source: Path | None = None, extra: Sequence[Path] = (), debounce_ms: int = DEBOUNCE
+    ) -> Running:
+        src, home, targets = layout(tmp_path)
+        r = Running(events, source or src, home, [*targets, *extra], debounce_ms)
+        made.append(r)
+        await r.ready()
+        return r
+
+    yield make
+    for r in made:
+        await r.stop()
 
 
-async def test_a_target_change_is_due_once(running: Running):
-    (running.home / ".zshrc").write_text("changed\n")
-    await eventually(lambda: running.due >= 1)
-    await running.sentinel(2)
-    assert running.due == 2
+async def test_a_target_change_is_due_once(start: Start):
+    r = await start()
+    (r.home / ".zshrc").write_text("changed\n")
+    await eventually(lambda: r.due >= 1)
+    await r.sentinel()
+    assert r.due == 2
 
 
-async def test_a_burst_is_due_once(running: Running):
+async def test_a_burst_is_due_once(start: Start):
+    r = await start()
     for n in range(5):
-        (running.home / ".zshrc").write_text(f"changed {n}\n")
-    await eventually(lambda: running.due >= 1)
-    await running.sentinel(2)
-    assert running.due == 2
+        (r.home / ".zshrc").write_text(f"changed {n}\n")
+    await eventually(lambda: r.due >= 1)
+    await r.sentinel()
+    assert r.due == 2
 
 
-async def test_a_source_change_is_due(running: Running):
-    (running.source / "sub").mkdir()
-    (running.source / "sub" / "dot_x").write_text("x\n")
-    await eventually(lambda: running.due >= 1)
+async def test_a_source_change_is_due(start: Start):
+    r = await start()
+    (r.source / "sub").mkdir()
+    (r.source / "sub" / "dot_x").write_text("x\n")
+    await eventually(lambda: r.due >= 1)
 
 
 @pytest.mark.parametrize(
@@ -190,102 +212,53 @@ async def test_a_source_change_is_due(running: Running):
     [".zshrc.bak", "../source/.git/index", "sub/.zshrc"],
     ids=["unmanaged sibling", "under .git", "subdir of a non-recursive parent"],
 )
-async def test_changes_that_dont_count(running: Running, path: str):
-    (running.home / path).write_text("changed\n")
-    await running.sentinel(1)
-    assert running.due == 1
+async def test_changes_that_dont_count(start: Start, path: str):
+    r = await start()
+    (r.home / path).write_text("changed\n")
+    await r.sentinel()
+    assert r.due == 1
 
 
-@pytest.fixture
-def seen(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Every path watchfiles reports, paused or not: a dropped event's arrival
-    is then something to wait for, not a sleep."""
-    paths: list[str] = []
-    real = watch.awatch
-
-    async def recording(*args, **kwargs):
-        async for changes in real(*args, **kwargs):
-            paths.extend(p for _, p in changes)
-            yield changes
-
-    monkeypatch.setattr(watch, "awatch", recording)
-    return paths
+async def test_paused_drops_events_until_resumed(start: Start):
+    r = await start()
+    r.watcher.pause()
+    mark = len(r.events.arrived)
+    (r.home / ".zshrc").write_text("while paused\n")
+    await eventually(lambda: r.events.saw(".zshrc", mark) is not None)
+    await quiet(r.count, DEBOUNCE)
+    assert r.due == 0
+    r.watcher.resume()
+    await r.sentinel()
+    assert r.due == 1
 
 
-async def test_paused_drops_events_until_resumed(seen: list[str], tmp_path: Path):
-    source, home, targets = layout(tmp_path)
-    r = Running(source, home, targets)
-    r.start()
-    try:
-        await r.ready()
-        r.watcher.pause()
-        seen.clear()
-        (home / ".zshrc").write_text("while paused\n")
-        await eventually(lambda: any(p.endswith("/.zshrc") for p in seen))
-        await quiet(r.count, DEBOUNCE)
-        assert r.due == 0
-        r.watcher.resume()
-        await r.sentinel(1)
-        assert r.due == 1
-    finally:
-        r.task.cancel()
-        await asyncio.gather(r.task, return_exceptions=True)
+async def test_pause_drops_a_wait_under_way(start: Start):
+    r = await start(debounce_ms=300)
+    (r.home / ".zshrc").write_text("changed\n")
+    await eventually(lambda: r.watcher._timer is not None)
+    r.watcher.pause()
+    assert r.watcher._timer is None
+    r.watcher.resume()
+    await r.sentinel()
+    assert r.due == 1
 
 
-async def test_pause_drops_a_wait_under_way(tmp_path: Path):
-    source, home, targets = layout(tmp_path)
-    r = Running(source, home, targets, debounce_ms=300)
-    r.start()
-    try:
-        await r.ready()
-        (home / ".zshrc").write_text("changed\n")
-        await eventually(lambda: r.watcher._timer is not None)
-        r.watcher.pause()
-        assert r.watcher._timer is None
-        r.watcher.resume()
-        await r.sentinel(1)
-        assert r.due == 1
-    finally:
-        r.task.cancel()
-        await asyncio.gather(r.task, return_exceptions=True)
+async def test_zero_debounce_is_due_per_batch(start: Start):
+    r = await start(debounce_ms=0)
+    (r.home / ".zshrc").write_text("changed\n")
+    await eventually(lambda: r.due >= 1)
 
 
-async def test_zero_debounce_is_due_per_batch(tmp_path: Path):
-    source, home, targets = layout(tmp_path)
-    r = Running(source, home, targets, debounce_ms=0)
-    r.start()
-    try:
-        await r.ready()
-        (home / ".zshrc").write_text("changed\n")
-        await eventually(lambda: r.due >= 1)
-    finally:
-        r.task.cancel()
-        await asyncio.gather(r.task, return_exceptions=True)
+async def test_a_missing_parent_is_left_out(start: Start, tmp_path: Path):
+    r = await start(extra=[tmp_path / "nowhere" / ".x"])
+    assert not r.task.done()
+    (r.home / ".zshrc").write_text("changed\n")
+    await eventually(lambda: r.due >= 1)
 
 
-async def test_a_missing_parent_is_left_out(tmp_path: Path):
-    source, home, targets = layout(tmp_path)
-    r = Running(source, home, [*targets, tmp_path / "nowhere" / ".x"])
-    r.start()
-    try:
-        await r.ready()
-        assert not r.task.done()
-        (home / ".zshrc").write_text("changed\n")
-        await eventually(lambda: r.due >= 1)
-    finally:
-        r.task.cancel()
-        await asyncio.gather(r.task, return_exceptions=True)
-
-
-async def test_a_missing_source_dir_is_left_out(tmp_path: Path):
-    _, home, targets = layout(tmp_path)
-    r = Running(tmp_path / "no-source", home, targets)
-    r.start()
-    try:
-        await r.ready()
-    finally:
-        r.task.cancel()
-        await asyncio.gather(r.task, return_exceptions=True)
+async def test_a_missing_source_dir_is_left_out(start: Start, tmp_path: Path):
+    r = await start(source=tmp_path / "no-source")
+    assert not r.task.done()
 
 
 async def test_nothing_to_watch_returns(tmp_path: Path):
@@ -293,12 +266,9 @@ async def test_nothing_to_watch_returns(tmp_path: Path):
     await asyncio.wait_for(watcher.run(), timeout=5)
 
 
-async def test_cancelling_returns_promptly_with_nothing_left(tmp_path: Path):
-    source, home, targets = layout(tmp_path)
+async def test_cancelling_returns_promptly_with_nothing_left(start: Start):
     before = asyncio.all_tasks()
-    r = Running(source, home, targets)
-    r.start()
-    await r.ready()
+    r = await start()
     assert len(asyncio.all_tasks() - before) == 3  # run() and its two watches
     r.task.cancel()
     await asyncio.wait_for(asyncio.gather(r.task, return_exceptions=True), timeout=2)

@@ -260,6 +260,8 @@ class CheztuiApp(App[None]):
         self.query_one("#key-bar", Static).update(_joined(parts, "  "))
 
     def on_list_detail_changed(self, event: ListDetail.Changed) -> None:
+        if not self.is_running:
+            return  # quitting: a read that ended as the app closed, its view gone
         self._render_key_bar()
 
     # --- Log line and session log ---------------------------------------------
@@ -605,8 +607,8 @@ class CheztuiApp(App[None]):
         """A watch refresh is due: run it quietly now, or once the write being
         prepared or the read under way ends. While a write's execution and its
         refresh pause watching, that refresh covers it."""
-        if self._watch_paused:
-            return
+        if self._watch_paused or not self.is_running:
+            return  # quitting stops the watcher after the views are gone
         if self.writing is not None or self.reading:
             self._refresh_waiting = True
         else:

@@ -23,8 +23,13 @@ edit the source, `d` chezmoi's own diff, and, off the key bar but in help
 and the palette, `M` merge the selection, `x` forget and `A` apply all. A
 fix shows a preview (the exact command and each target's dry run) and runs
 on `enter`; edit and merge go straight to your editor or merge tool. The
-log line then names the commit chezmoi made and whether it pushed.
-Watching for changes arrives with the rest of v0.1. The design is in
+log line then names the commit chezmoi made and whether it pushed. The
+view refreshes on its own when the source dir or a managed file changes,
+`refresh.debounce_ms` (300 by default) after the last change, leaving the
+log line as it was unless the read fails; cheztui's own writes refresh
+once. `g` refreshes by
+hand, and `refresh.watch = false` in `~/.config/cheztui/config.toml`, or
+on the settings screen (`,`), turns watching off. The design is in
 [docs/spec.md](docs/spec.md) and the plan in the
 [milestones](https://github.com/chocs-cat/cheztui/milestones).
 
