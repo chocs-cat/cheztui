@@ -9,11 +9,13 @@ runner.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
 from textual.pilot import Pilot
+from textual.worker import WorkerCancelled
 
 from cheztui.config import Config
 from cheztui.runner import Completed
@@ -93,11 +95,13 @@ def statuses(fake: FakeChezmoi) -> int:
 
 async def settled(pilot: Pilot) -> None:
     """Wait for the write and the refresh it starts: a worker started by another
-    after `wait_for_complete` was called isn't waited for."""
+    after `wait_for_complete` was called isn't waited for, and one the refresh
+    cancels (a body read) raises out of it."""
     app = pilot.app
     assert isinstance(app, CheztuiApp)
     for _ in range(200):
-        await workers_done(pilot)
+        with contextlib.suppress(WorkerCancelled):
+            await workers_done(pilot)
         if not app.reading and app.writing is None:
             return
     raise AssertionError("still reading or writing")
