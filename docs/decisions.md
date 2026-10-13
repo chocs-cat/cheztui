@@ -652,9 +652,10 @@ These are the choices, written into §5 *Watching in the TUI*.
   and runs once after it, since the running read may have read the file
   before it changed.
 - The watch set needs every managed target, and the Drift read reads
-  `managed` only when something drifted, which is when watching matters
-  least. So the TUI's read adds `managed --exclude=scripts` while
-  watching is on; the source dir comes from the header's `dump-config`.
+  `managed` only when something drifted, so an in-sync view, the one
+  waiting for the next change, would have no targets to watch. The TUI's
+  read adds `managed --exclude=scripts` while watching is on; the source
+  dir comes from the header's `dump-config`.
 - A write pauses watching from execution until its refresh ends, rather
   than filtering the write's events out after the debounce: the debounce
   would deliver them after the refresh, as a second one. While a write is
