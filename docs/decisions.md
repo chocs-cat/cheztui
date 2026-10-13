@@ -669,3 +669,21 @@ These are the choices, written into §5 *Watching in the TUI*.
   left running after `watch = false` would read as a broken setting.
 
 *Where:* `docs/spec.md` §4 (Log line), §5 (Refresh), §9, §10.
+
+## DEC-38: Edges of watching found while building it (2026-10)
+
+Added 2026-10-13 in #48. Two cases spec §5 *Watching in the TUI* left
+open.
+
+- `esc` on a read also drops a watch refresh waiting for that read to
+  end. The user chose to stop reading; starting a read the moment they
+  cancel one would undo that. The watcher keeps running, so the next
+  change, or `g`, reads again.
+- The source dir is resolved whole (`os.path.realpath`), not by its
+  parent alone as targets are. A path under it is compared with its
+  parent resolved, which resolves through a symlinked source dir; a
+  source dir compared by its link name would then never contain it, and
+  no source change would count.
+
+*Where:* `docs/spec.md` §5 (Watching in the TUI); `src/cheztui/watch.py`,
+`src/cheztui/tui/app.py`.

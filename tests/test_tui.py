@@ -31,7 +31,10 @@ def make_app(
 
 
 async def settled(pilot: Pilot) -> None:
-    await pilot.app.workers.wait_for_complete()
+    """Wait for the workers that end: the watcher's runs until it is stopped."""
+    workers = [w for w in pilot.app.workers if w.group != "watch"]
+    if workers:  # an empty list waits for every worker
+        await pilot.app.workers.wait_for_complete(workers)
     await pilot.pause()
 
 
@@ -440,8 +443,7 @@ async def test_live_frame(scratch: Scratch, monkeypatch: pytest.MonkeyPatch):
     config = Config(scratch.root / "cheztui.toml")
     app = CheztuiApp(config, scratch.chezmoi())
     async with app.run_test() as pilot:
-        await pilot.app.workers.wait_for_complete()
-        await pilot.pause()
+        await settled(pilot)
         left, right = header(app)
         assert left == f"cheztui • {scratch.source}"
         assert right.endswith("   master   clean")

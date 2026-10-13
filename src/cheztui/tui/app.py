@@ -12,6 +12,11 @@ preview modal when the plan needs confirming or is blocked, execute with
 the terminal runner for edit and merge, log the result, clear the
 selection and refresh. What a plan holds and how a result is worded are
 `ops.py`'s; the app lays out, suspends and logs.
+
+A watcher runs in a worker of its own while `refresh.watch` is on (spec §5
+*Watching in the TUI*; DEC-37). The read yields its watch set; the app
+decides when a due refresh runs quietly, waits for a read or a write, or
+is dropped because a write's own refresh covers it.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from textual import events
 from textual.app import App, ComposeResult, SuspendNotSupported
@@ -32,9 +38,9 @@ from textual.content import Content
 from textual.theme import BUILTIN_THEMES
 from textual.widgets import Static
 
-from cheztui import ops
+from cheztui import ops, watch
 from cheztui.chezmoi import Chezmoi, ChezmoiError, ChezmoiFailed
-from cheztui.config import Config, ConfigError, load
+from cheztui.config import Config, ConfigError, RefreshConfig, load
 from cheztui.git import GitError, GitFailed
 from cheztui.runner import Completed, Runner, run_subprocess
 from cheztui.secrets import Masker
@@ -59,6 +65,23 @@ CANCELLED = "refresh cancelled"
 PREPARING = "preparing…"
 RUNNING = "running…"
 PREVIEW_CANCELLED = "preview cancelled"
+
+
+WATCH_STOPPED = "watching stopped"
+
+
+class Watching(Protocol):
+    """What the app needs of a watcher: `watch.Watcher`, or a test's fake."""
+
+    source_dir: Path
+    targets: tuple[Path, ...]
+
+    async def run(self) -> None: ...
+    def pause(self) -> None: ...
+    def resume(self) -> None: ...
+
+
+WatcherFactory = Callable[[Path, Sequence[Path], int, Callable[[], None]], Watching]
 
 
 @dataclass(frozen=True)
@@ -123,6 +146,12 @@ class CheztuiApp(App[None]):
         self.terminal_runner: Runner = self.run_in_terminal
         # One for the app: its lock serializes cheztui's writes (DEC-27).
         self.writes = ops.WriteOps(chezmoi, config, git_runner=git_runner)
+        self.watcher_factory: WatcherFactory = watch.Watcher  # tests replace it
+        self.watcher: Watching | None = None
+        self.watch_set: tuple[Path, tuple[Path, ...]] | None = None  # the last one read
+        self._refresh = config.refresh  # the refresh settings in effect
+        self._refresh_waiting = False  # a watch refresh waits on a read or a write
+        self._watch_paused = False  # from a write's execution until its refresh ends
         self.session_log: list[LogEntry] = []
         self.repo: ops.RepoState | None = None
         self.reading = False
@@ -130,7 +159,7 @@ class CheztuiApp(App[None]):
         self._version_ok = False
         self._read_id = 0
         self._write_id = 0
-        self._keep_line = False  # the refresh after a write leaves its result showing
+        self._keep_line = False  # a quiet read leaves the log line showing
 
     # --- Layout -------------------------------------------------------------
 
@@ -231,6 +260,8 @@ class CheztuiApp(App[None]):
         self.query_one("#key-bar", Static).update(_joined(parts, "  "))
 
     def on_list_detail_changed(self, event: ListDetail.Changed) -> None:
+        if not self.is_running:
+            return  # quitting: a read that ended as the app closed, its view gone
         self._render_key_bar()
 
     # --- Log line and session log ---------------------------------------------
@@ -254,17 +285,20 @@ class CheztuiApp(App[None]):
     def action_view(self, name: str) -> None:
         """Switch view; Drift is the only one so far (DEC-20)."""
 
-    def start_read(self, *, after_write: bool = False) -> None:
+    def start_read(self, *, quiet: bool = False) -> None:
         """Read chezmoi; a read still running is cancelled by this one.
 
-        The detail's bodies are read again too (spec §6 Detail reads). The
-        refresh after a write leaves the write's result on the log line,
-        unless it fails or is cancelled (spec §4 Log line, DEC-35).
+        The detail's bodies are read again too (spec §6 Detail reads). A
+        quiet read, the refresh after a write or a watch refresh, leaves the
+        log line as it was, unless it fails or is cancelled (spec §4 Log
+        line; DEC-35, DEC-37). Any read covers a watch refresh waiting on
+        one, since it starts after the change.
         """
         self._read_id += 1
         self.reading = True
-        self._keep_line = after_write
-        if not after_write:
+        self._keep_line = quiet
+        self._refresh_waiting = False
+        if not quiet:
             self.set_log_line(READING)
         self.view.reset_detail()
         self.run_worker(self._read(self._read_id), group="read", exclusive=True)
@@ -329,6 +363,7 @@ class CheztuiApp(App[None]):
         self.theme = self.settings.ui.theme
         self.writes.config = self.settings  # the write path's masking reads it
         self.update_layout()
+        self._apply_refresh(self.settings.refresh)
 
     def edit_config(self) -> str | None:
         """Edit the config file suspended, then reload it; a config error keeps the old one.
@@ -400,6 +435,9 @@ class CheztuiApp(App[None]):
         self.reading = False
         self.set_log_line(CANCELLED)
         self.record(CANCELLED)
+        # The user stopped reading: a watch refresh waiting on it goes too (DEC-38).
+        self._refresh_waiting = False
+        self._read_ended()
 
     async def _read(self, read_id: int) -> None:
         masker = Masker(self.settings.secrets, Path("/"))
@@ -449,7 +487,20 @@ class CheztuiApp(App[None]):
                 self.repo = None
             self._render_header()
 
-        await asyncio.gather(read_drift(), read_repo())
+        targets: tuple[Path, ...] | None = None
+
+        async def read_watch_set() -> None:
+            # A failure clears nothing: the watcher keeps its set (spec §5 *The watch set*).
+            nonlocal targets
+            try:
+                targets = await ops.sanitized(ops.watch_targets(self.chezmoi), masker, whole=False)
+            except (ChezmoiError, GitError) as e:
+                fail(e)
+
+        watching = self._refresh.watch
+        await asyncio.gather(read_drift(), read_repo(), *([read_watch_set()] if watching else []))
+        if read_id == self._read_id and targets is not None and self.repo is not None:
+            self._set_watch(self.repo.source_dir, targets)
         self._finish(read_id, failures)
 
     def _finish(self, read_id: int, failures: list[tuple[str, str]]) -> None:
@@ -464,6 +515,7 @@ class CheztuiApp(App[None]):
             self.set_log_line("")
         self._keep_line = False
         self._render_key_bar()
+        self._read_ended()
 
     # --- Writes (spec §6 Drift, *Actions in the TUI*; DEC-35) ---------------------
 
@@ -489,6 +541,8 @@ class CheztuiApp(App[None]):
     def _end_write(self) -> None:
         self.writing = None
         self._render_key_bar()
+        # A write that never executed leaves a refresh that waited on it to run (spec §5).
+        self._run_waiting()
 
     async def _write(self, prepare: Callable[[], Awaitable[ops.WritePlan]], write_id: int) -> None:
         # Diagnostics that can't be assigned to a target: line level, no never_mask (DEC-30).
@@ -533,6 +587,7 @@ class CheztuiApp(App[None]):
                 if entry.excluded is not None:
                     self.record(ops.left_out_line(entry))
         self.writing = RUNNING
+        self._pause_watch()
         self.set_log_line(RUNNING)
         result = await self.writes.execute(
             plan, confirmed=True, interactive_runner=self.terminal_runner
@@ -544,7 +599,97 @@ class CheztuiApp(App[None]):
         # After every execution: the selection goes and the view refreshes (DEC-35).
         self.view.clear_selection()
         self._end_write()
-        self.start_read(after_write=True)
+        self.start_read(quiet=True)
+
+    # --- Watching (spec §5 *Watching in the TUI*; DEC-37) -----------------------
+
+    def on_watch_due(self) -> None:
+        """A watch refresh is due: run it quietly now, or once the write being
+        prepared or the read under way ends. While a write's execution and its
+        refresh pause watching, that refresh covers it."""
+        if self._watch_paused or not self.is_running:
+            return  # quitting stops the watcher after the views are gone
+        if self.writing is not None or self.reading:
+            self._refresh_waiting = True
+        else:
+            self.start_read(quiet=True)
+
+    def _run_waiting(self) -> None:
+        if self._refresh_waiting and not self.reading and self.writing is None:
+            self.start_read(quiet=True)
+
+    def _read_ended(self) -> None:
+        """A read ended, however it ended. The first to end after a write has
+        executed is that write's refresh (or `g`'s, which replaced it): watching
+        resumes, even while the next write is preparing or previewed, since only
+        an execution pauses it. A refresh that waited on the read runs once no
+        write is under way (`_run_waiting`)."""
+        if self.writing == RUNNING:
+            return
+        if self._watch_paused:
+            self._watch_paused = False
+            if self.watcher is not None:
+                self.watcher.resume()
+        self._run_waiting()
+
+    def _pause_watch(self) -> None:
+        """From execution until the write's refresh ends: events, a wait under way
+        and a refresh waiting on the write are dropped (spec §5)."""
+        self._watch_paused = True
+        self._refresh_waiting = False
+        if self.watcher is not None:
+            self.watcher.pause()
+
+    def _set_watch(self, source_dir: Path, targets: tuple[Path, ...]) -> None:
+        """A read yielded a watch set: (re)start the watcher when it differs from
+        the running one's, or none runs (spec §5 *The watch set*)."""
+        self.watch_set = (source_dir, targets)
+        running = self.watcher
+        if running is None or (running.source_dir, running.targets) != self.watch_set:
+            self._start_watcher()
+
+    def _start_watcher(self) -> None:
+        self._stop_watcher()
+        if self.watch_set is None or not self._refresh.watch:
+            return
+        source_dir, targets = self.watch_set
+        watcher = self.watcher_factory(
+            source_dir, targets, self._refresh.debounce_ms, self.on_watch_due
+        )
+        if self._watch_paused:
+            watcher.pause()
+        self.watcher = watcher
+        self.run_worker(self._watch(watcher), group="watch")
+
+    def _stop_watcher(self) -> None:
+        self.workers.cancel_group(self, "watch")
+        self.watcher = None
+
+    async def _watch(self, watcher: Watching) -> None:
+        try:
+            await watcher.run()
+        except Exception as e:  # a watched dir removed, the system's watch limit
+            if watcher is not self.watcher:
+                return
+            self.watcher = None  # the next read with a set starts it again
+            # Masked as a read's diagnostic is (spec §5 Reads in the TUI; DEC-33).
+            masker = Masker(self.settings.secrets, Path("/"))
+            detail = ops.mask_diagnostic(masker, str(e) or type(e).__name__, whole=False)
+            line = f"{WATCH_STOPPED}: {detail}"
+            self.set_log_line(line, error=True)
+            self.record(f"✗ {line}", detail)
+
+    def _apply_refresh(self, refresh: RefreshConfig) -> None:
+        """`refresh.*` take effect at once (spec §5 *Settings*, §9): off stops the
+        watcher; on starts it with the last watch set, or the next read does;
+        a new debounce restarts it."""
+        if refresh == self._refresh:
+            return
+        self._refresh = refresh
+        if refresh.watch:
+            self._start_watcher()
+        else:
+            self._stop_watcher()
 
     def full_diff(self, target: Path) -> None:
         """`d`: chezmoi's own diff in the terminal, its pager and diff command applying.

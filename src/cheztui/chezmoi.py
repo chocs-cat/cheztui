@@ -322,11 +322,17 @@ class Chezmoi:
         return parse_status(await self._text("status", "--path-style=absolute", *map(str, targets)))
 
     async def managed(
-        self, include: Sequence[str] = (), targets: Sequence[str | Path] = ()
+        self,
+        include: Sequence[str] = (),
+        targets: Sequence[str | Path] = (),
+        *,
+        exclude: Sequence[str] = (),
     ) -> dict[str, ManagedEntry]:
         args = ["managed", "--format=json", "--path-style=all"]
         if include:
             args.append(f"--include={','.join(include)}")
+        if exclude:
+            args.append(f"--exclude={','.join(exclude)}")
         return parse_managed(await self._text(*args, *map(str, targets)))
 
     async def dump(self, targets: Sequence[str | Path] = ()) -> dict[str, DumpEntry]:

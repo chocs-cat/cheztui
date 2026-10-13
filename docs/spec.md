@@ -367,7 +367,7 @@ whole rather than returning potentially rendered secret text.
 - `g` forces a full refresh.
 - Refreshes after every write.
 
-**Watching in the TUI** (DEC-37):
+**Watching in the TUI** (DEC-37, DEC-38):
 
 - **What is watched.** The source dir (`sourceDir`, as the header reads
   it), recursively, and the parent dir of each managed target, not
@@ -381,15 +381,18 @@ whole rather than returning potentially rendered secret text.
   dir; and in a target's parent, a change to a managed target itself, not
   to a sibling. A path is compared as its parent dir resolved
   (`os.path.realpath`) joined with its own name, on both sides: macOS
-  reports resolved paths, and a target may itself be a symlink.
-  watchfiles' default filter is off; these rules are the only filter.
+  reports resolved paths, and a target may itself be a symlink. The
+  source dir is resolved whole, so "under" holds through a symlinked
+  source dir (DEC-38). watchfiles' default filter is off; these rules are
+  the only filter.
 - **Debounce.** A refresh is due `refresh.debounce_ms` after the last
   event that counts; each such event restarts the wait. `0` makes it due
   as soon as watchfiles reports the event.
 - **A watch refresh** is the read `g` runs (the Drift read and the header
   read), but quiet: no `reading chezmoi…`, and the log line keeps what it
   showed unless the read fails or is cancelled (§4 Log line). `esc`
-  cancels it as it does any read. One that falls due while another read
+  cancels it as it does any read, and `esc` on a read drops a refresh
+  waiting for it too (DEC-38). One that falls due while another read
   runs waits for that read to end, then runs once.
 - **cheztui's own writes.** One that falls due while a write is being
   prepared or its preview is open waits; when the write ends without

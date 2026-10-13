@@ -80,7 +80,12 @@ which extends the write path's fake to answer chezmoi's and git's reads
 from a canned state; its `drifted()` state replays the recorded fixtures,
 and `drifted(root)` puts them under a real root with the home's files
 created, so eligibility sees what chezmoi left. Tests replace the app's
-`terminal_runner`, since a headless run can't suspend.
+`terminal_runner`, since a headless run can't suspend. A conftest fixture
+makes the app's watcher a fake from `tests/watching.py`, whose `due()`
+stands in for a change; the tests that watch real files set
+`app.watcher_factory` to `watch.Watcher` and use that file's helpers,
+which poll rather than sleep and show a missing refresh with a sentinel
+change after it.
 Snapshot tests (pytest-textual-snapshot) keep the expected screens as SVGs
 in `tests/__snapshots__/`. After a deliberate change to what a screen
 shows, rewrite them with `uv run pytest --snapshot-update` and review the
