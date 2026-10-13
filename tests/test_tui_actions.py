@@ -26,7 +26,8 @@ from tests.conftest import Scratch, requires_chezmoi
 from tests.fake_chezmoi import FakeChezmoi
 from tests.fake_write import subcommand
 from tests.test_chezmoi_reads import build_drift
-from tests.test_tui import TOKEN, make_app, settled, styles, text
+from tests.test_tui import TOKEN, make_app, styles, text
+from tests.test_tui import settled as workers_done
 from tests.test_tui_drift import move_to
 from tests.test_tui_screens import palette_entries
 
@@ -88,6 +89,18 @@ def writes(fake: FakeChezmoi) -> list[tuple[str, ...]]:
 
 def statuses(fake: FakeChezmoi) -> int:
     return sum(1 for c in fake.chezmoi_calls if c[:1] == ("status",))
+
+
+async def settled(pilot: Pilot) -> None:
+    """Wait for the write and the refresh it starts: a worker started by another
+    after `wait_for_complete` was called isn't waited for."""
+    app = pilot.app
+    assert isinstance(app, CheztuiApp)
+    for _ in range(200):
+        await workers_done(pilot)
+        if not app.reading and app.writing is None:
+            return
+    raise AssertionError("still reading or writing")
 
 
 async def until(pilot: Pilot, check: Callable[[], bool]) -> None:
