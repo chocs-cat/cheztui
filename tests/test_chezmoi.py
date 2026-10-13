@@ -191,6 +191,32 @@ async def test_managed_scoped_targets_follow_flags():
     ]
 
 
+async def test_managed_exclude_follows_include():
+    # The watch set's read (spec §5 *What is watched*): `--exclude` after `--include`.
+    runner = FakeRunner(stdout=b"{}")
+    await Chezmoi(runner).managed(["files"], exclude=["scripts", "externals"])
+    await Chezmoi(runner).managed(exclude=["scripts"])
+    assert runner.calls == [
+        (
+            "chezmoi",
+            "--no-tty",
+            "managed",
+            "--format=json",
+            "--path-style=all",
+            "--include=files",
+            "--exclude=scripts,externals",
+        ),
+        (
+            "chezmoi",
+            "--no-tty",
+            "managed",
+            "--format=json",
+            "--path-style=all",
+            "--exclude=scripts",
+        ),
+    ]
+
+
 @pytest.mark.parametrize("code", [0, 1, 127])
 async def test_target_verify_exit_is_boolean(code):
     assert await Chezmoi(FakeRunner(returncode=code)).verify(Path("/h/a")) is (code == 0)

@@ -128,6 +128,20 @@ def test_managed_fixture():
     assert both.source_relative == "dot_both file"
 
 
+def test_managed_no_scripts_fixture():
+    # The watch set's read (spec §5 *What is watched*): the script is left out.
+    assert set(parse_managed(fixture("managed-no-scripts.json"))) == {
+        ".both file",
+        ".dir",
+        ".dir/inner",
+        ".gone",
+        ".link",
+        ".mine",
+        ".tmplfile",
+        ".tool",
+    }
+
+
 def test_managed_templates_fixture():
     assert list(parse_managed(fixture("managed-templates.json"))) == [".tmplfile"]
 
@@ -365,6 +379,12 @@ def test_record_fixtures(scratch: Scratch, monkeypatch: pytest.MonkeyPatch):
             "--format=json",
             "--path-style=all",
             "--include=templates",
+        ],
+        "managed-no-scripts.json": [
+            "managed",
+            "--format=json",
+            "--path-style=all",
+            "--exclude=scripts",
         ],
         "dump.json": ["dump", "--format=json"],
         "state-dump.json": ["state", "dump", "--format=json"],

@@ -270,6 +270,20 @@ async def repo_state(chezmoi: Chezmoi, *, git_runner: Runner = run_subprocess) -
     return RepoState(config.source_dir, branch, ahead_behind, len(stray))
 
 
+# --- The watch set (spec §5 Watching in the TUI, DEC-37) ---------------------
+
+
+async def watch_targets(chezmoi: Chezmoi) -> tuple[Path, ...]:
+    """The managed targets a watcher watches, sorted: every one but the scripts,
+    which have no target (spec §5 *What is watched*).
+
+    Read on its own, since the Drift read reads `managed` only when something
+    drifted. Errors propagate unmasked, as `drift()`'s do.
+    """
+    managed = await chezmoi.managed(exclude=["scripts"])
+    return tuple(sorted(entry.absolute for entry in managed.values()))
+
+
 # --- The Drift detail's reads (spec §6 Rows and detail in the TUI; DEC-34) ---
 
 

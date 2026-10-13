@@ -2,7 +2,8 @@
 
 `FakeChezmoi` extends the write path's `FakeWrite`, so one fake answers
 chezmoi and git with one call log. It adds the reads: `--version`, `status`,
-`managed` with and without each `--include`, `dump`, `state dump`, `cat`,
+`managed` with and without each `--include` and with the watch set's
+`--exclude=scripts`, `dump`, `state dump`, `cat`,
 `diff`, the write previews' dry runs and a source's `execute-template` from
 a canned state, and git's branch and ahead/behind. `drifted()` replays the
 recorded fixtures in `tests/fixtures/chezmoi/`, so it can't drift from what
@@ -31,7 +32,8 @@ VERSION = "chezmoi version v2.60.0, commit 0123456789abcdef, built at 2025-01-01
 class FakeChezmoi(FakeWrite):
     version: str | None = VERSION  # None: the binary is missing
     status: str = ""
-    managed: dict[str | None, str] = field(default_factory=dict)  # by `--include` value
+    # By `--include` value; `"-scripts"` answers the watch set's `--exclude=scripts`.
+    managed: dict[str | None, str] = field(default_factory=dict)
     dump: str = "{}"
     state: str = '{"entryState": {}}'
     cat: dict[Path, bytes] = field(default_factory=dict)
@@ -74,6 +76,7 @@ class FakeChezmoi(FakeWrite):
             managed={
                 None: load("managed.json"),
                 "templates": load("managed-templates.json"),
+                "-scripts": load("managed-no-scripts.json"),
                 "encrypted": "{}",
                 "externals": "{}",
             },
@@ -104,6 +107,8 @@ class FakeChezmoi(FakeWrite):
                 include = next(
                     (a.split("=", 1)[1] for a in args if a.startswith("--include=")), None
                 )
+                if "--exclude=scripts" in args:
+                    include = "-scripts"
                 out = self.managed.get(include, "{}")
             case ("dump", *_):
                 out = self.dump

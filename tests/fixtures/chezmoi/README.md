@@ -10,6 +10,7 @@ scratch root is replaced with `/scratch`, so no machine path is committed;
 |---|---|
 | `status.txt` | `chezmoi status --path-style=absolute` |
 | `managed.json` | `chezmoi managed --format=json --path-style=all` |
+| `managed-no-scripts.json` | `chezmoi managed --format=json --path-style=all --exclude=scripts` |
 | `managed-templates.json` | `chezmoi managed --format=json --path-style=all --include=templates` |
 | `dump.json` | `chezmoi dump --format=json` |
 | `state-dump.json` | `chezmoi state dump --format=json` |
