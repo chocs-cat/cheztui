@@ -138,7 +138,10 @@ stack detail under the list; `tab` toggles focus.
 - **Log line.** `reading chezmoi…` while a read runs; otherwise the last
   result, error or cancellation, empty at start. An error shows as
   `✗ <message>`, in the error colour, with the message the CLI would print
-  after `cheztui: ` (§7). A read that succeeds leaves it empty.
+  after `cheztui: ` (§7). A read that succeeds leaves it empty, except
+  the refresh after a write: that one leaves the write's result showing,
+  without `reading chezmoi…`, and only its failure or cancellation
+  replaces it (§6 Drift, *Result*; DEC-35).
 - **List.** One row is current; moving stops at either end. `/` opens a
   one-line filter input under the list that filters as you type:
   case-insensitive substring of the target as displayed (`~/…`); `enter`
@@ -578,6 +581,10 @@ would run.
   shows `✗ <message>` (the read message form, §4 Log line) in place of the
   body, masked like a read diagnostic (§5 Reads in the TUI), and is
   logged in the session log when it is shown; the log line is left alone.
+  A failure isn't kept: moving back to the row, or back to that body with
+  `t`, reads it again, and a second failure is logged again. A failed
+  reveal shows its error in place of the body; `R` again returns to the
+  kept, masked body (DEC-34).
 - **Reveal** (`R`). Works when the body on screen had something masked, or
   is revealed. It re-reads that body unmasked (still cut to
   `ui.diff_context`) and marks the head's third line `revealed` in
@@ -605,7 +612,8 @@ would run.
   and shows, when `ops.eligibility` admits at least one row it would take:
   `a`, `r`, `x` and `M` take the targets (§4 List), `e` and `m` the
   current row; `enter` and `d` need a current row, `A` a row in the list.
-  While a write is prepared or runs, no action key works.
+  While a write is prepared or runs, no action key works, nor `g`; a read
+  already running goes on, and `esc` cancels the preparation before it.
 - **Prepare.** `enter` prepares the targets' default fixes, `a`, `r`, `x`
   and `M` their action over the targets, `e` and `m` theirs over the
   current row, and `A` apply-all over every row in the view, whatever the
@@ -617,23 +625,34 @@ would run.
   any blocked plan, interactive ones included, so the stray files are
   always shown. Top to bottom: each command's `display`, prefixed `$ `;
   the entries, one line each, grouped by action in execution order under
-  the action's name, each the target in `~` form with its direction, then
+  the action's name (`apply`, `re-add`, `forget`, `merge`, `edit`) on its
+  own line; for a mixed selection the merges' heading is `then merge,
+  suspended:`. An entry line is two spaces, `[x] ` or `[ ] ` for
+  apply-all, the direction as the Drift row shows it, padded to four
+  columns (four spaces for a forgotten directory's descendant with no
+  drift row), one space and the target in `~` form, then
   ` overwrites your change` (`$warning`) when it does, ` left out: <reason>`
-  (muted) when excluded, or ` with <directory>` for a forgotten
-  directory's descendant; for a mixed selection, `then merge, suspended:`
-  and the merge targets; with auto-commit off and stray files, `warning:
-  uncommitted files in the source tree:` and one indented path per line;
-  then the current entry's masked diff, coloured and cut as in the detail,
-  or `(no preview)` for an entry with none. `j`/`k` move the current
-  entry. Apply-all shows `[x]` or `[ ]` before each entry and `space`
-  ticks the current one, rebuilding the commands (`WritePlan.with_selection`);
+  (muted) when excluded, or ` with <directory>` (the directory in `~`
+  form) for a forgotten directory's descendant. The current entry is
+  highlighted as the list's current row is. With auto-commit off and stray
+  files comes `warning: uncommitted files in the source tree:` and one
+  path per line, indented two spaces; then the current entry's masked
+  diff, coloured and cut as in the detail, or `(no preview)` for an entry
+  with none. `j`/`k` move the current entry, stopping at either end, and
+  `J`/`K`, `PgUp`/`PgDn` scroll the modal. Apply-all's `space` ticks the
+  current one, rebuilding the commands (`WritePlan.with_selection`);
   an excluded entry can't be ticked. The footer lists `enter Run` (`enter
   Dry run` under `-n`), `space Tick` for apply-all, `j/k Move`, `esc
   Cancel`; with nothing ticked `enter` does nothing and the footer says
-  `nothing ticked`. A blocked plan shows `✗ the source tree has
-  uncommitted changes; commit or remove them first:` and the stray paths,
-  or `✗ preview failed: <error>`, and only `esc Close`. `R` doesn't work in
-  the modal.
+  `nothing ticked`. `enter` closes the modal and runs the plan. `esc`
+  closes it and runs nothing: the log line and session log say `preview
+  cancelled`, and the selection stays. A blocked plan shows `✗ the source
+  tree has uncommitted changes; commit or remove them first:` and the
+  stray paths, or `✗ preview failed: <error>`, and only `esc Close`. When
+  it opens, the log line shows `✗ the source tree has uncommitted
+  changes` or `✗ preview failed: <error>`, logged at once with the stray
+  paths or the masked diagnostic; closing it logs nothing more. `R`
+  doesn't work in the modal, nor do the frame's other keys.
 - **Interactive plans** (`e`, `m`, `M`, and `enter` when every target's fix
   is merge) open no modal unless blocked (DEC-4). They run through the
   TUI's terminal runner: the command runs with the terminal under
@@ -662,12 +681,15 @@ would run.
   | ran, result unreadable | `✗ <action> <targets> ran, but reading the result failed: <error>` |
 
   The verbs are `applied`, `re-added`, `forgot`, `edited`, `merged`,
-  `added`. After any execution attempt the selection is cleared and the
-  view refreshes (§5).
+  `added`. After every execution, whatever it ran, the selection is
+  cleared and the view refreshes (§5); that refresh keeps the result on
+  the log line unless it fails or is cancelled (§4 Log line). A cancelled
+  preview executes nothing, so neither happens.
 - **`d`** suspends and runs `chezmoi diff <target>` through the terminal
   runner, so chezmoi's pager and diff command apply. It is a read, not a
   write: no pre-flight, and it runs under `-n`. A non-zero exit shows
-  `✗ chezmoi diff exited N` in the log line and session log.
+  `✗ chezmoi diff exited N` in the log line and session log; a zero exit
+  changes neither, and no refresh follows.
 
 ### 2 · Files
 

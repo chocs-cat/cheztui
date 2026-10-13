@@ -564,6 +564,12 @@ written into `docs/spec.md` §6 (Rows and detail in the TUI) and §9.
 - `R` re-reads the body unmasked instead of keeping the clear text beside
   the masked one, so nothing unmasked outlives the pane (DEC-17, DEC-30).
 
+*Amended 2026-10 (#38):* a failed body read isn't kept. Moving back to the
+row (or back to that body with `t`) reads it again, and a second failure
+is logged again. A failure is usually transient (a lock, a moved file), and
+a kept one would show a stale error until `g`; a re-read costs one chezmoi
+call and logs nothing when it succeeds.
+
 *Where:* `docs/spec.md` §6 (Drift), §9.
 
 ## DEC-35: How Drift actions run in the TUI (2026-10)
@@ -587,4 +593,25 @@ TUI).
 - `d` is a read run in the terminal, not a write: it needs no pre-flight
   and works under `-n`.
 
-*Where:* `docs/spec.md` §6 (Drift).
+*Amended 2026-10:* the edges the actions left open.
+
+- The refresh after a write leaves the result on the log line. DEC-33's
+  amendment empties the log line after a successful read, which would wipe
+  the result a moment after it appears; the result is what needs reading,
+  and a failed or cancelled refresh still replaces it.
+- After every execution, whatever ran, the selection is cleared and the
+  view refreshes, rather than only when a command was attempted: a refusal
+  at execution means the tree changed under the preview, and the rows on
+  screen are then the ones most likely to be stale.
+- `esc` in a confirmable preview logs `preview cancelled`, as cancelling the
+  preparation does, since every cancellation is logged (DEC-33). A blocked
+  plan's reason and stray files are logged when its modal opens, so they
+  outlive the modal rather than depending on how it is closed.
+- While a write is prepared or runs, `g` doesn't work: the write's own
+  refresh follows, and a read racing chezmoi's write could show a half
+  state. `esc` cancels a preparation before a read, since the preparation
+  is what the user just started.
+- Preview entry lines put the direction before the target, as the Drift
+  rows do, so the two lists read the same way.
+
+*Where:* `docs/spec.md` §4 (Log line), §6 (Drift).
