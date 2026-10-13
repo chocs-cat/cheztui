@@ -16,9 +16,9 @@ from textual.pilot import Pilot
 
 from cheztui.config import Config, RefreshConfig
 from cheztui.runner import Completed
-from cheztui.tui.app import CheztuiApp
+from cheztui.tui.app import RUNNING, CheztuiApp
 from cheztui.tui.settings import SettingsScreen
-from cheztui.tui.views.base import ListDetail
+from cheztui.tui.views.base import ListDetail, RowList
 from cheztui.tui.widgets.confirm import PreviewModal
 from tests.fake_chezmoi import FakeChezmoi
 from tests.fake_write import is_write, subcommand
@@ -32,7 +32,7 @@ from tests.test_tui_actions import (
     until_modal,
     writes,
 )
-from tests.test_tui_drift import move_to
+from tests.test_tui_drift import move_to, view
 from tests.test_tui_screens import open_settings, row_text
 from tests.watching import Watchers
 
@@ -394,6 +394,53 @@ async def test_g_replacing_the_write_refresh_resumes_when_it_ends(
         release.set()
         await settled(pilot)
         assert watchers.current.calls == ["pause", "resume"]
+
+
+async def test_a_write_refresh_ending_under_the_next_preview_resumes_watching(
+    tmp_path, root, watchers: Watchers
+):
+    app, fake = watch_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        await applied(pilot)
+        release = fake.hold("symbolic-ref")  # the header read: `status` is the pre-flight's too
+        await pilot.press("enter")
+        await until(pilot, lambda: branch_reads(fake) == 2)
+        # The next write's preview opens over the refresh; `move_to` would wait for the read.
+        names = [r.target.name for r in view(app).shown]
+        step = names.index(".mine") - (app.query_one(RowList).highlighted or 0)
+        await pilot.press(*(["j"] if step > 0 else ["k"]) * abs(step), "a")
+        await until_modal(pilot)
+        release.set()
+        await until(pilot, lambda: not app.reading)
+        assert watchers.current.calls == ["pause", "resume"]  # only an execution keeps the pause
+        await pilot.press("escape")
+        await settled(pilot)
+        assert statuses(fake) == 2
+        watchers.current.due()  # watching again
+        await settled(pilot)
+        assert statuses(fake) == 3
+
+
+async def test_a_read_ending_during_execution_keeps_the_pause(tmp_path, root, watchers: Watchers):
+    app, fake = watch_app(root, tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        reading = fake.hold("symbolic-ref")
+        await pilot.press("g")
+        await until(pilot, lambda: branch_reads(fake) == 2)
+        await pilot.press("a")  # on the first row, while `g`'s read runs
+        await until_modal(pilot)
+        writing = fake.hold("apply")
+        await pilot.press("enter")
+        await until(pilot, lambda: app.writing == RUNNING)
+        reading.set()
+        await until(pilot, lambda: not app.reading)
+        assert watchers.current.calls == ["pause"]  # the write's refresh hasn't run yet
+        writing.set()
+        await settled(pilot)
+        assert watchers.current.calls == ["pause", "resume"]
+        assert statuses(fake) == 3
 
 
 async def test_a_watcher_restarted_during_a_pause_starts_paused(tmp_path, root, watchers: Watchers):

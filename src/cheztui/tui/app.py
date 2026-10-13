@@ -621,8 +621,10 @@ class CheztuiApp(App[None]):
     def _read_ended(self) -> None:
         """A read ended, however it ended. The first to end after a write has
         executed is that write's refresh (or `g`'s, which replaced it): watching
-        resumes. Otherwise a refresh that waited on the read runs."""
-        if self.writing is not None:
+        resumes, even while the next write is preparing or previewed, since only
+        an execution pauses it. A refresh that waited on the read runs once no
+        write is under way (`_run_waiting`)."""
+        if self.writing == RUNNING:
             return
         if self._watch_paused:
             self._watch_paused = False
