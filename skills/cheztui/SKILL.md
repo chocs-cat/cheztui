@@ -91,7 +91,7 @@ the user says to. The diff is masked unless `--reveal`.
 | `delete` | `old` | removes `old` |
 | `insert_after` / `insert_before` | `anchor`, `text` | puts `text` after / before `anchor` |
 | `append` / `prepend` | `text` | adds `text` at the end (after a newline if the file lacks one) / start |
-| `regex_replace` | `pattern`, `repl`, `flags` | Python `re.sub`; `flags` from `m`, `s`, `i`, `x`; `repl` uses `\1`, `\g<name>` |
+| `regex_replace` | `pattern`, `repl`, optional `flags` | Python `re.sub`; `flags` from `m`, `s`, `i`, `x`; `repl` uses `\1`, `\g<name>` |
 
 - Ops apply in order, each to the previous one's result. Every field but
   `count` is a string.
@@ -182,8 +182,9 @@ Exit 2 and 3 print their message on stderr and nothing on stdout.
 Forgetting, renaming or removing a managed file, and changing its attributes,
 aren't in cheztui's CLI yet: use chezmoi's own commands (`chezmoi forget`,
 `chezmoi destroy`, `chezmoi chattr`; for a rename, `chezmoi forget` the old
-path and `cheztui add` the new one). chezmoi may commit and push the whole source tree at once, so
-first check the tree is clean, and stop on stray files as above:
+path and `cheztui add` the new one). chezmoi may commit and push the whole
+source tree at once, so first check the tree is clean, and stop on stray files
+as above:
 
 ```sh
 git -C "$(chezmoi source-path)" status --short
