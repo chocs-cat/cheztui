@@ -11,8 +11,10 @@ files for agents. `docs/spec.md` is the design; README.md covers use,
 CONTRIBUTING.md the layout and the release process, and
 `skills/cheztui/SKILL.md` how agents *use* cheztui.
 
-The repo is a scaffold: the placeholder app and `--version` exist, and the
-features in `docs/spec.md` §12 land milestone by milestone.
+The v0.1 features in `docs/spec.md` §12 are built: the app frame, the Drift
+view and the write path, watching, and the `status`, `verify`, `edit` and
+`add` commands. The later milestones' views and commands land one milestone
+at a time.
 
 ## Before you start
 
