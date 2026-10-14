@@ -50,7 +50,7 @@ Same shape as corral and tack.
 | Checks | pytest + pytest-asyncio + pytest-textual-snapshot, ruff (corral's rule set), ty |
 | Repo | `chocs-cat/cheztui`, default branch `master`, MIT |
 | Releases | release-please, Conventional Commits, CI-gated `master` |
-| Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`), Claude plugin manifest (`.claude-plugin/`) |
+| Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`, and `"rust" => :build` for watchfiles, DEC-12), Claude plugin manifest (`.claude-plugin/`) |
 | Platforms | macOS and Linux |
 | Requires | chezmoi ≥ 2.60, checked once per run; below it the CLI exits 3 and the TUI shows the error. A version string that isn't `vX.Y.Z` (a development build prints `dev`) passes (DEC-21) |
 
@@ -1184,10 +1184,63 @@ dry run.
 ### Skill
 
 `skills/cheztui/SKILL.md` ships in the repo and is deployed by tack (as
-corral's is). It covers: when to use cheztui (any change to a file that is
-or might be chezmoi-managed), use the CLI with `--json` not the TUI, the
-edit flow (read source → write spec → `--dry-run` → apply), ops reference,
-new files, exit codes, and read commands for looking before acting.
+corral's is); the repo is also a Claude Code plugin marketplace for it
+(`.claude-plugin/`). It covers: when to use cheztui (any change to a file
+that is or might be chezmoi-managed), use the CLI with `--json` not the TUI,
+the edit flow (read source → write spec → `--dry-run` → apply), ops
+reference, new files, exit codes, and read commands for looking before
+acting.
+
+Its frontmatter `name` is `cheztui`, and its `description` says when to
+load it: changing a file that is or might be chezmoi-managed (a shell alias
+or function, a dotfile, config under `~/.config`), adding a new file to
+chezmoi, and checking what drifted. Its body, in this order (DEC-39):
+
+1. **Look before acting.** `cheztui status --json` and
+   `cheztui verify --json`, with what their fields mean (§7). `cheztui
+   edit` itself says whether a target is managed; `chezmoi source-path
+   <target>` finds the source to read.
+2. **Edit a managed file.** Read the source and copy each anchor out of it
+   verbatim, leading whitespace and final newline included; write the ops
+   spec to a file; `cheztui edit <target> --ops FILE --dry-run --json` and
+   read the diff; then the same without `--dry-run`; report `commit` and
+   `pushed` from the result (DEC-19). One target per call (DEC-11). A
+   template's ops apply to its source text (`template: true`), and
+   `chezmoi cat <target>` shows what lands. An encrypted target's source is
+   ciphertext: its plaintext comes from `chezmoi decrypt <source>` and
+   holds its secrets, so the agent reads it only with the user's go-ahead.
+   After an edit to a shell startup file, the agent tells the user to
+   `source` it or open a new shell.
+3. **The ops reference.** Each op and its fields, `count` as an assertion,
+   `skip_if_contains`, a bare list (§8 Ops spec), and what the common
+   failures (`no match found`, `matched N time(s)`, `ops produced no
+   change`) mean.
+4. **New files.** Write the file at its target path, then
+   `cheztui add <path> --dry-run --json`, then the same without
+   `--dry-run`; `--template` and `--encrypt` when wanted. A managed path is
+   refused: edit it instead.
+5. **Refusals.** What each means and what the agent does: not managed →
+   `cheztui add`; drifted → show the user the `cheztui status` row and ask,
+   passing `--allow-drift` only when the user says to overwrite the
+   target's change; a dirty source tree → name the `stray` files to the
+   user and stop, never committing, stashing or deleting them; chezmoi's
+   `edit.command` set → tell the user. Masked diffs are expected for
+   encrypted and `always_mask` files: `--reveal` only when the user asks to
+   see the content.
+6. **Exit codes and JSON** (§7, §8): the success and refusal shapes, and
+   exit 0, 1, 2 and 3; a skip exits 0 with `skipped: true`. Exit 3 names a
+   chezmoi that is missing, older than 2.60, or failing; `cheztui` not
+   found means it isn't installed (Homebrew or PyPI, as README.md says).
+7. **Beyond cheztui.** Forgetting, renaming, removing and changing a
+   managed file's attributes aren't in cheztui's CLI yet: the agent uses
+   chezmoi's own command, after checking `git -C "$(chezmoi source-path)"
+   status --short` is clean, since chezmoi may commit and push the whole
+   source tree at once.
+
+Global flags (`--source`, `--destination`, `--chezmoi-config`) appear once,
+for setups that need them. The skill names no private paths and no other
+skill. Every `cheztui` command line in its `sh` blocks parses with
+cheztui's own argument parser, which a test checks (§11).
 
 **Retiring `chezmoi-edit`:** once cheztui v0.1 is released and the
 `cheztui` skill is deployed, it replaces the `chezmoi-edit` skill.
@@ -1362,6 +1415,11 @@ src/cheztui/
   drift from what real chezmoi prints.
 - **TUI:** `App.run_test()` + snapshot tests (pytest-textual-snapshot) for
   each view and the preview modal.
+- **Skill:** `tests/test_skill.py` parses every `cheztui` line in the
+  skill's `sh` blocks with the CLI's parser, and runs the skill's flow
+  (`status`, `edit --dry-run`, `edit`, `add`, `verify`, each with
+  `--json`) as a subprocess in the scratch setup, checking §7's and §8's
+  shapes and exit codes.
 - CI: macOS and Linux, pytest, ruff check/format, ty, packaging check. The
   test job installs chezmoi at the floor version (DEC-21), so integration
   tests run in CI against the oldest chezmoi cheztui supports, while a

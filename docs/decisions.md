@@ -147,7 +147,14 @@ commit. Agents call it once per file. Its ops spec stays compatible with the
 `chocs-cat/tap/cheztui` declares `depends_on "chezmoi"`. cheztui does nothing
 without the chezmoi binary.
 
-*Where:* `docs/spec.md` §2; `scripts/formula.py`.
+Amended 2026-10-14: the formula also declares `depends_on "rust" => :build`.
+Homebrew builds every resource from its sdist, and watchfiles is a Rust
+extension (maturin), so without a Rust toolchain the install fails; the
+homebrew-core formulas that vendor watchfiles do the same. It is listed
+first, as `brew audit` orders build dependencies, and unconditionally,
+since watchfiles is a direct dependency.
+
+*Where:* `docs/spec.md` §2; `scripts/formula.py`; CONTRIBUTING.md (Homebrew).
 
 ## DEC-13: Every read and write goes through the chezmoi binary (2026-10)
 
@@ -687,3 +694,33 @@ open.
 
 *Where:* `docs/spec.md` §5 (Watching in the TUI); `src/cheztui/watch.py`,
 `src/cheztui/tui/app.py`.
+
+## DEC-39: What the agent skill tells agents to do (2026-10)
+
+Added 2026-10-14. `skills/cheztui/SKILL.md` runs unattended, in an agent
+that will reach for any flag that makes a refusal go away. cheztui's
+refusals are its safety, so the skill says what each one asks of the agent
+rather than how to get past it:
+
+- Agents use the `--json` CLI, never the TUI, which needs a person at the
+  keys.
+- `--allow-drift` overwrites the target's own change, so it is passed only
+  when the user says to. A drift refusal goes to the user with the
+  `cheztui status` row.
+- A dirty source tree is the user's work in progress. The agent names the
+  stray files and stops; it never commits, stashes or deletes them to get
+  a clean tree.
+- `--reveal`, and reading an encrypted file's plaintext with
+  `chezmoi decrypt`, put secrets into the agent's transcript, so both wait
+  for the user's go-ahead.
+- What cheztui's CLI doesn't do yet (forget, rename, remove, attributes)
+  goes through chezmoi's own commands after the same clean-tree check
+  `cheztui edit` makes, as the skill cheztui replaces did.
+
+The skill doesn't check or work around chezmoi's autoCommit or autoPush: a
+user who turned them on wants them, and cheztui already blocks a dirty
+tree when they're on (DEC-8). A test parses every `cheztui` command line in
+the skill with the CLI's own parser, so a renamed flag fails the build
+instead of misleading an agent.
+
+*Where:* `docs/spec.md` §8 (Skill), §11; `skills/cheztui/SKILL.md`.
