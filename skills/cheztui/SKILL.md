@@ -173,7 +173,7 @@ commit, pushed, verified}`; `add --json` the same without `skipped`, and
   `"error"`, exit 1. Report it to the user as it stands.
 
 A refusal is `{"error": "…"}`, plus `"stray": [path, …]` for a dirty tree.
-Exit 2 and 3 print `cheztui: <message>` on stderr and nothing on stdout.
+Exit 2 and 3 print their message on stderr and nothing on stdout.
 `cheztui: command not found` means cheztui isn't installed: Homebrew
 (`brew install chocs-cat/tap/cheztui`) or PyPI (`uv tool install cheztui`).
 
