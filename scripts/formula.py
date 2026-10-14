@@ -52,6 +52,7 @@ class Cheztui < Formula
   sha256 "{sha256}"
   license "MIT"
 
+  depends_on "rust" => :build
   depends_on "chezmoi"
   depends_on "python@{python}"
 {resources}

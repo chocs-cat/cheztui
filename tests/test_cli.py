@@ -6,6 +6,7 @@ Every command that reaches chezmoi passes the scratch `--chezmoi-config`,
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -99,6 +100,17 @@ def test_without_a_terminal_prints_help(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_on_terminal", lambda: False)
     assert main([]) == 0
     assert capsys.readouterr().out.startswith("usage: cheztui")
+
+
+@pytest.mark.parametrize("command", ["edit", "add"])
+def test_every_edit_and_add_argument_has_help(command):
+    commands = next(
+        a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    actions = [a for a in commands.choices[command]._actions if a.dest != "help"]
+    assert len(actions) >= 5
+    for action in actions:
+        assert action.help, action.option_strings or action.dest
 
 
 def flags(s: Scratch) -> list[str]:

@@ -1,5 +1,8 @@
 # Contributing
 
+Outside pull requests aren't taken yet; [issues](https://github.com/chocs-cat/cheztui/issues)
+and bug reports are welcome.
+
 ## Setup
 
 ```sh
@@ -21,7 +24,8 @@ each depending only on the ones above it; they arrive with the milestones:
 | `git.py` | source-repo queries: porcelain status, ahead/behind, log, `HEAD` |
 | `config.py` | `~/.config/cheztui/config.toml`, loaded and saved with tomlkit |
 | `edit.py` | the ops-spec engine and the `_editor` entry point |
-| `secrets.py`, `state.py`, `preview.py`, `watch.py` | masking, chezmoi's persistent state, new-machine previews, file watching |
+| `secrets.py`, `watch.py` | masking, file watching |
+| `state.py`, `preview.py` | chezmoi's persistent state (v0.3) and new-machine previews (v0.5); not written yet |
 | `ops.py` | the operations, returning dataclasses |
 | `cli.py` | argparse front end, human and `--json` output |
 | `tui/` | the Textual app, its views and widgets |
@@ -102,6 +106,11 @@ chezmoi need chezmoi 2.60 or later on `PATH` and skip without it; CI runs
 them against 2.60.0, the oldest supported. The parsers' recorded output is in
 `tests/fixtures/chezmoi/`, whose README says how to record it again.
 
+`tests/test_skill.py` holds the agent skill, `skills/cheztui/SKILL.md`, to
+the CLI: every `cheztui` line in its `sh` blocks must parse, and its flow
+runs end to end. A change to a command or flag updates the skill, or that
+test fails.
+
 ## Roadmap and decisions
 
 Planned work and ideas are [GitHub issues](https://github.com/chocs-cat/cheztui/issues),
@@ -169,9 +178,8 @@ add a `Release-As: 1.0.0` footer to a commit.
   and **Pull requests** read/write. Release PRs are then opened under your
   name and CI runs on them by itself. Renew the token before it expires; if
   it lapses, release-please fails until you replace it or delete the secret.
-- **Branch protection:** require **CI passed** and **conventional commit
-  titles** on `master`. GitHub Free doesn't offer protection on private
-  repos, so this waits until the repo is public.
+- **Branch protection:** `master` requires **CI passed** and
+  **conventional commit titles**, admins included.
 
 ### Homebrew
 
@@ -179,7 +187,9 @@ The formula is `Formula/cheztui.rb` in
 [chocs-cat/homebrew-tap](https://github.com/chocs-cat/homebrew-tap), written by
 `scripts/formula.py`: don't edit it in the tap, change the script's template.
 It builds from the PyPI sdist, depends on `chezmoi`, and has a `resource` for
-each runtime dependency at the version the release's `uv.lock` pins. To redo a
-version's formula, run the **Formula** workflow by hand with that version.
+each runtime dependency at the version the release's `uv.lock` pins. It also
+needs Rust at build time, since watchfiles builds from its sdist (DEC-12). To
+redo a version's formula, run the **Formula** workflow by hand with that
+version.
 Locally, point `--root` at a checkout of its tag, which the lock comes from:
 `uv run --script scripts/formula.py X.Y.Z --root ../cheztui-vX.Y.Z > cheztui.rb`.
