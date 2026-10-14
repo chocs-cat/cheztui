@@ -38,7 +38,10 @@ def test_render():
     )
     assert text.startswith("class Cheztui < Formula\n  include Language::Python::Virtualenv\n")
     assert '  url "https://files/cheztui-0.1.0.tar.gz"\n  sha256 "' + "a" * 64 in text
-    assert '  depends_on "chezmoi"\n  depends_on "python@3.14"\n' in text
+    assert (
+        '  depends_on "rust" => :build\n  depends_on "chezmoi"\n  depends_on "python@3.14"\n'
+        in text
+    )
     assert text.index('resource "markdown-it-py"') < text.index('resource "textual"')
     assert '    url "https://files/textual-8.2.8.tar.gz"\n    sha256 "' + "c" * 64 in text
     assert 'shell_output("#{bin}/cheztui --version")' in text

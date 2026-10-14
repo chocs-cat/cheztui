@@ -50,18 +50,36 @@ def build_parser() -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text, description=help_text.capitalize() + ".")
         sub.add_argument("--json", action="store_true", help="print JSON on stdout")
     edit = commands.add_parser("edit", help="scripted edit of one managed file")
-    edit.add_argument("target", type=Path)
+    edit.add_argument("target", type=Path, help="the managed file to edit")
     edit.add_argument("--ops", required=True, metavar="FILE|-", help="JSON ops spec, or stdin")
-    edit.add_argument("--dry-run", dest="command_dry_run", action="store_true")
-    edit.add_argument("--allow-drift", action="store_true")
-    edit.add_argument("--reveal", action="store_true")
+    edit.add_argument(
+        "--dry-run",
+        dest="command_dry_run",
+        action="store_true",
+        help="print the diff and write nothing",
+    )
+    edit.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="edit even if the target drifted, overwriting its change",
+    )
+    edit.add_argument(
+        "--reveal", action="store_true", help="don't mask encrypted and always_mask diffs"
+    )
     edit.add_argument("--json", action="store_true", help="print JSON on stdout")
     add = commands.add_parser("add", help="bring a new file or directory under management")
-    add.add_argument("target", type=Path, metavar="path")
-    add.add_argument("--template", action="store_true")
-    add.add_argument("--encrypt", action="store_true")
-    add.add_argument("--dry-run", dest="command_dry_run", action="store_true")
-    add.add_argument("--reveal", action="store_true")
+    add.add_argument("target", type=Path, metavar="path", help="the file or directory to add")
+    add.add_argument("--template", action="store_true", help="add it as a template")
+    add.add_argument("--encrypt", action="store_true", help="add it encrypted")
+    add.add_argument(
+        "--dry-run",
+        dest="command_dry_run",
+        action="store_true",
+        help="print the diff and add nothing",
+    )
+    add.add_argument(
+        "--reveal", action="store_true", help="don't mask encrypted and always_mask diffs"
+    )
     add.add_argument("--json", action="store_true", help="print JSON on stdout")
     return p
 

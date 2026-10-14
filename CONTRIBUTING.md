@@ -179,7 +179,9 @@ The formula is `Formula/cheztui.rb` in
 [chocs-cat/homebrew-tap](https://github.com/chocs-cat/homebrew-tap), written by
 `scripts/formula.py`: don't edit it in the tap, change the script's template.
 It builds from the PyPI sdist, depends on `chezmoi`, and has a `resource` for
-each runtime dependency at the version the release's `uv.lock` pins. To redo a
-version's formula, run the **Formula** workflow by hand with that version.
+each runtime dependency at the version the release's `uv.lock` pins. It also
+needs Rust at build time, since watchfiles builds from its sdist (DEC-12). To
+redo a version's formula, run the **Formula** workflow by hand with that
+version.
 Locally, point `--root` at a checkout of its tag, which the lock comes from:
 `uv run --script scripts/formula.py X.Y.Z --root ../cheztui-vX.Y.Z > cheztui.rb`.
