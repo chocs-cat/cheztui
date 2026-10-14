@@ -1,6 +1,6 @@
 [project]
 name = "cheztui"
-version = "0.0.0"
+version = "0.1.0"
 description = "A clean, fast TUI for chezmoi: see what drifted, which side changed, and fix it with one key."
 readme = "README.md"
 license = "MIT"

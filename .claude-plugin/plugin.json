@@ -1,6 +1,6 @@
 {
   "name": "cheztui",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Agent skill for cheztui: check what drifted and make previewed, verified edits to chezmoi-managed dotfiles.",
   "author": {
     "name": "John Foland",
