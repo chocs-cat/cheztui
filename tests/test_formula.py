@@ -45,6 +45,7 @@ def test_render():
     assert text.index('resource "markdown-it-py"') < text.index('resource "textual"')
     assert '    url "https://files/textual-8.2.8.tar.gz"\n    sha256 "' + "c" * 64 in text
     assert 'shell_output("#{bin}/cheztui --version")' in text
+    assert 'shell_output(bin/"cheztui")' in text
     assert text.endswith("  end\nend\n")
 
 
