@@ -2,22 +2,29 @@
 
 `FakeChezmoi` extends the write path's `FakeWrite`, so one fake answers
 chezmoi and git with one call log. It adds the reads: `--version`, `status`,
-`managed` with and without each `--include`, `dump`, `state dump` and `cat`
-from a canned state, and git's branch and ahead/behind. `drifted()` replays
-the recorded fixtures in `tests/fixtures/chezmoi/`, so it can't drift from
-what real chezmoi prints. Failures use `FakeWrite.fail`, and `FakeWrite.hold`
-makes a call wait on an event.
+`managed` with and without each `--include` and with the watch set's
+`--exclude=scripts`, `dump`, `state dump`, `cat`,
+`diff`, the write previews' dry runs and a source's `execute-template` from
+a canned state, and git's branch and ahead/behind. `drifted()` replays the
+recorded fixtures in `tests/fixtures/chezmoi/`, so it can't drift from what
+real chezmoi prints; given a root, it puts them there and creates the
+home's files, so `ops.eligibility` sees what chezmoi left.
+Failures use `FakeWrite.fail`, and `FakeWrite.hold` makes a call wait on an
+event.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from cheztui.chezmoi import go_quote
 from cheztui.runner import Completed
 from tests.fake_write import FakeWrite, subcommand
 from tests.test_chezmoi_reads import ROOT, fixture
 
+TEMPLATE_SOURCE = '{{ "tmpl" | upper }}\n{{ "more" | upper }}\n'
 VERSION = "chezmoi version v2.60.0, commit 0123456789abcdef, built at 2025-01-01T00:00:00Z"
 
 
@@ -25,10 +32,15 @@ VERSION = "chezmoi version v2.60.0, commit 0123456789abcdef, built at 2025-01-01
 class FakeChezmoi(FakeWrite):
     version: str | None = VERSION  # None: the binary is missing
     status: str = ""
-    managed: dict[str | None, str] = field(default_factory=dict)  # by `--include` value
+    # By `--include` value; `"-scripts"` answers the watch set's `--exclude=scripts`.
+    managed: dict[str | None, str] = field(default_factory=dict)
     dump: str = "{}"
     state: str = '{"entryState": {}}'
     cat: dict[Path, bytes] = field(default_factory=dict)
+    diff: dict[Path, str] = field(default_factory=dict)  # `chezmoi diff <target>`'s stdout
+    sources: dict[Path, str] = field(default_factory=dict)  # a source's literal text
+    # A write preview's stdout, by action then target (`<action> … --dry-run … <target>`).
+    previews: dict[str, dict[Path, str]] = field(default_factory=dict)
     branch: str | None = "master"  # None: HEAD is detached
     counts: tuple[int, int] = (0, 0)  # ahead, behind; with an upstream only
 
@@ -37,21 +49,47 @@ class FakeChezmoi(FakeWrite):
         return cls(**kwargs)
 
     @classmethod
-    def drifted(cls, **kwargs) -> FakeChezmoi:
-        """The recorded fixtures, with `/scratch` paths in `dump-config` to match them."""
+    def drifted(cls, root: Path | None = None, **kwargs) -> FakeChezmoi:
+        """The recorded fixtures, with `/scratch` paths in `dump-config` to match them.
+
+        With `root`, `/scratch` becomes `root` in every fixture text, and the
+        home's regular files are created there: every status row's target but
+        the deleted `.gone` and the script. Tests that show `~` set `HOME` to
+        `root / "home"`.
+        """
+        at = root if root is not None else ROOT
+
+        def load(name: str) -> str:
+            text = fixture(name)
+            return text if root is None else text.replace(str(ROOT), str(root))
+
+        home = at / "home"
+        if root is not None:
+            home.mkdir(parents=True, exist_ok=True)
+            for name in (".both file", ".mine", ".tmplfile", ".tool"):
+                (home / name).write_text(f"{name}\n")
         fake = cls(
-            source=ROOT / "source",
-            dest=ROOT / "home",
-            work_tree=ROOT / "source",
-            status=fixture("status.txt"),
+            source=at / "source",
+            dest=home,
+            work_tree=at / "source",
+            status=load("status.txt"),
             managed={
-                None: fixture("managed.json"),
-                "templates": fixture("managed-templates.json"),
+                None: load("managed.json"),
+                "templates": load("managed-templates.json"),
+                "-scripts": load("managed-no-scripts.json"),
                 "encrypted": "{}",
                 "externals": "{}",
             },
-            dump=fixture("dump.json"),
-            state=fixture("state-dump.json"),
+            dump=load("dump.json"),
+            state=load("state-dump.json"),
+            diff={Path(t): d for t, d in json.loads(load("diff.json")).items()},
+            # The template row, as `build_drift` writes it.
+            cat={home / ".tmplfile": b"TMPL\nMORE\n"},
+            sources={at / "source" / "dot_tmplfile.tmpl": TEMPLATE_SOURCE},
+            previews={
+                action: {Path(t): out for t, out in outputs.items()}
+                for action, outputs in json.loads(load("preview.json")).items()
+            },
         )
         return replace(fake, **kwargs)
 
@@ -69,6 +107,8 @@ class FakeChezmoi(FakeWrite):
                 include = next(
                     (a.split("=", 1)[1] for a in args if a.startswith("--include=")), None
                 )
+                if "--exclude=scripts" in args:
+                    include = "-scripts"
                 out = self.managed.get(include, "{}")
             case ("dump", *_):
                 out = self.dump
@@ -76,6 +116,14 @@ class FakeChezmoi(FakeWrite):
                 out = self.state
             case ("cat", target):
                 out = self.cat.get(Path(target), b"")
+            case ("diff", *_, target):
+                out = self.diff.get(Path(target), "")
+            case (action, *flags, target) if "--dry-run" in flags and action in self.previews:
+                out = self.previews[action].get(Path(target))
+            case ("execute-template", template):
+                out = next(
+                    (text for path, text in self.sources.items() if go_quote(path) in template), ""
+                )
         if out is None:
             return super().chezmoi_default(call)
         return Completed(call, 0, out.encode() if isinstance(out, str) else out, b"")

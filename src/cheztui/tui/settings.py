@@ -186,12 +186,15 @@ class SettingsScreen(ModalScreen[None]):
         self.query_one(ListView).focus()
 
     def change(self, key: str, value: object) -> None:
-        """Validate, save and apply one setting; an error stays on its row, unsaved."""
+        """Validate, save and apply one setting; an error stays on its row, unsaved.
+
+        A save that fails leaves the previous value in the config and the file,
+        and nothing is applied (spec §9, #32).
+        """
         row = self.row(key)
         settings = self.cheztui.settings
         try:
-            settings.set(key, value)
-            settings.save()
+            settings.change(key, value)
         except ConfigError as e:
             row.error = e.message
         except OSError as e:

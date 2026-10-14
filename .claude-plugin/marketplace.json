@@ -8,7 +8,7 @@
     {
       "name": "cheztui",
       "source": "./",
-      "description": "Agent skill for cheztui: safe, previewed edits to chezmoi-managed dotfiles."
+      "description": "Agent skill for cheztui: check what drifted and make previewed, verified edits to chezmoi-managed dotfiles."
     }
   ]
 }

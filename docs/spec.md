@@ -50,7 +50,7 @@ Same shape as corral and tack.
 | Checks | pytest + pytest-asyncio + pytest-textual-snapshot, ruff (corral's rule set), ty |
 | Repo | `chocs-cat/cheztui`, default branch `master`, MIT |
 | Releases | release-please, Conventional Commits, CI-gated `master` |
-| Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`), Claude plugin manifest (`.claude-plugin/`) |
+| Distribution | PyPI, Homebrew `chocs-cat/tap/cheztui` (`depends_on "chezmoi"`, and `"rust" => :build` for watchfiles, DEC-12), Claude plugin manifest (`.claude-plugin/`) |
 | Platforms | macOS and Linux |
 | Requires | chezmoi ≥ 2.60, checked once per run; below it the CLI exits 3 and the TUI shows the error. A version string that isn't `vX.Y.Z` (a development build prints `dev`) passes (DEC-21) |
 
@@ -138,7 +138,11 @@ stack detail under the list; `tab` toggles focus.
 - **Log line.** `reading chezmoi…` while a read runs; otherwise the last
   result, error or cancellation, empty at start. An error shows as
   `✗ <message>`, in the error colour, with the message the CLI would print
-  after `cheztui: ` (§7). A read that succeeds leaves it empty.
+  after `cheztui: ` (§7). A read that succeeds leaves it empty, except
+  the refresh after a write and a watch refresh: those leave the line as
+  it was, without `reading chezmoi…`, and only their failure or
+  cancellation replaces it (§5 Refresh, §6 Drift *Result*; DEC-35,
+  DEC-37).
 - **List.** One row is current; moving stops at either end. `/` opens a
   one-line filter input under the list that filters as you type:
   case-insensitive substring of the target as displayed (`~/…`); `enter`
@@ -363,6 +367,59 @@ whole rather than returning potentially rendered secret text.
 - `g` forces a full refresh.
 - Refreshes after every write.
 
+**Watching in the TUI** (DEC-37, DEC-38):
+
+- **What is watched.** The source dir (`sourceDir`, as the header reads
+  it), recursively, and the parent dir of each managed target, not
+  recursively. The targets are the absolute paths of `chezmoi managed
+  --format=json --path-style=all --exclude=scripts`: a script has no
+  target, and its source is under the source dir. A dir that doesn't
+  exist when watching starts is left out; with nothing to watch, no
+  watcher runs.
+- **Which events count.** Any change (added, modified, deleted) under the
+  source dir, except at a path with a `.git` component below the source
+  dir; and in a target's parent, a change to a managed target itself, not
+  to a sibling. A path is compared as its parent dir resolved
+  (`os.path.realpath`) joined with its own name, on both sides: macOS
+  reports resolved paths, and a target may itself be a symlink. The
+  source dir is resolved whole, so "under" holds through a symlinked
+  source dir (DEC-38). watchfiles' default filter is off; these rules are
+  the only filter.
+- **Debounce.** A refresh is due `refresh.debounce_ms` after the last
+  event that counts; each such event restarts the wait. `0` makes it due
+  as soon as watchfiles reports the event.
+- **A watch refresh** is the read `g` runs (the Drift read and the header
+  read), but quiet: no `reading chezmoi…`, and the log line keeps what it
+  showed unless the read fails or is cancelled (§4 Log line). `esc`
+  cancels it as it does any read, and `esc` on a read drops a refresh
+  waiting for it too (DEC-38). One that falls due while another read
+  runs waits for that read to end, then runs once.
+- **cheztui's own writes.** One that falls due while a write is being
+  prepared or its preview is open waits; when the write ends without
+  executing (cancelled, blocked, its preparation failed), one watch
+  refresh runs then. From the start of execution until the refresh after
+  the write ends, however it ends (finished, failed, cancelled, or
+  replaced by `g`'s read), watching is paused: events are dropped, a wait
+  under way is dropped, and a refresh waiting on the write is dropped;
+  the write's own refresh covers them.
+- **The watch set.** While `refresh.watch` is on, the TUI's read runs the
+  `managed` read above alongside the Drift and header reads. When it and
+  the header read both succeed and the source dir or the targets differ
+  from the running watcher's, the watcher restarts with the new set. A
+  failed `managed` read is a read failure like the other two (logged, on
+  the log line); it clears nothing, and the watcher keeps its set.
+- **Settings.** `refresh.watch` and `refresh.debounce_ms` changed on the
+  settings screen, or in the file through its `e`, take effect at once:
+  off stops the watcher, on starts it with the last watch set (or after
+  the next read, with none yet), and a new debounce restarts it.
+- **Failure.** A watcher that fails (a watched dir removed, the system's
+  watch limit) stops, and the log line and session log show `✗ watching
+  stopped: <message>`, the message masked as a read's diagnostic is
+  (§5 Reads in the TUI). The next read that yields a watch set starts it
+  again.
+- `refresh.watch = false` leaves `g` and the refresh after a write. `-n`
+  doesn't change watching.
+
 ### Secrets
 
 - The TUI masks secret-looking values in every diff and rendered body it
@@ -578,6 +635,10 @@ would run.
   shows `✗ <message>` (the read message form, §4 Log line) in place of the
   body, masked like a read diagnostic (§5 Reads in the TUI), and is
   logged in the session log when it is shown; the log line is left alone.
+  A failure isn't kept: moving back to the row, or back to that body with
+  `t`, reads it again, and a second failure is logged again. A failed
+  reveal shows its error in place of the body; `R` again returns to the
+  kept, masked body (DEC-34).
 - **Reveal** (`R`). Works when the body on screen had something masked, or
   is revealed. It re-reads that body unmasked (still cut to
   `ui.diff_context`) and marks the head's third line `revealed` in
@@ -605,7 +666,8 @@ would run.
   and shows, when `ops.eligibility` admits at least one row it would take:
   `a`, `r`, `x` and `M` take the targets (§4 List), `e` and `m` the
   current row; `enter` and `d` need a current row, `A` a row in the list.
-  While a write is prepared or runs, no action key works.
+  While a write is prepared or runs, no action key works, nor `g`; a read
+  already running goes on, and `esc` cancels the preparation before it.
 - **Prepare.** `enter` prepares the targets' default fixes, `a`, `r`, `x`
   and `M` their action over the targets, `e` and `m` theirs over the
   current row, and `A` apply-all over every row in the view, whatever the
@@ -613,27 +675,42 @@ would run.
   cancels it as it cancels a read, logging `preview cancelled` (nothing
   writes before confirmation, §5). A failed preparation shows `✗
   <message>` in the log line and its diagnostic in the session log.
-- **The preview modal** opens for a plan that needs confirmation, and for
+- **The preview modal** opens for a plan that needs confirmation (one
+  with a command that isn't interactive, and apply-all's always, even
+  with nothing ticked at the start, so its rows can be ticked), and for
   any blocked plan, interactive ones included, so the stray files are
   always shown. Top to bottom: each command's `display`, prefixed `$ `;
   the entries, one line each, grouped by action in execution order under
-  the action's name, each the target in `~` form with its direction, then
+  the action's name (`apply`, `re-add`, `forget`, `merge`, `edit`) on its
+  own line; for a mixed selection the merges' heading is `then merge,
+  suspended:`. An entry line is two spaces, `[x] ` or `[ ] ` for
+  apply-all, the direction as the Drift row shows it, padded to four
+  columns (four spaces for a forgotten directory's descendant with no
+  drift row), one space and the target in `~` form, then
   ` overwrites your change` (`$warning`) when it does, ` left out: <reason>`
-  (muted) when excluded, or ` with <directory>` for a forgotten
-  directory's descendant; for a mixed selection, `then merge, suspended:`
-  and the merge targets; with auto-commit off and stray files, `warning:
-  uncommitted files in the source tree:` and one indented path per line;
-  then the current entry's masked diff, coloured and cut as in the detail,
-  or `(no preview)` for an entry with none. `j`/`k` move the current
-  entry. Apply-all shows `[x]` or `[ ]` before each entry and `space`
-  ticks the current one, rebuilding the commands (`WritePlan.with_selection`);
+  (muted) when excluded, or ` with <directory>` (the directory in `~`
+  form) for a forgotten directory's descendant. The current entry is
+  highlighted as the list's current row is. With auto-commit off and stray
+  files comes `warning: uncommitted files in the source tree:` and one
+  path per line, indented two spaces; then the current entry's masked
+  diff, coloured and cut as in the detail, `(no diff)` when its dry run
+  printed nothing, or `(no preview)` for an entry with none (DEC-36).
+  While a confirmable preview is open the log line is empty. `j`/`k`
+  move the current entry, stopping at either end, and `J`/`K`,
+  `PgUp`/`PgDn` scroll the modal. Apply-all's `space` ticks the
+  current one, rebuilding the commands (`WritePlan.with_selection`);
   an excluded entry can't be ticked. The footer lists `enter Run` (`enter
   Dry run` under `-n`), `space Tick` for apply-all, `j/k Move`, `esc
-  Cancel`; with nothing ticked `enter` does nothing and the footer says
-  `nothing ticked`. A blocked plan shows `✗ the source tree has
-  uncommitted changes; commit or remove them first:` and the stray paths,
-  or `✗ preview failed: <error>`, and only `esc Close`. `R` doesn't work in
-  the modal.
+  Cancel`; with nothing ticked `enter` does nothing and `nothing ticked`
+  takes `enter Run`'s place. `enter` closes the modal and runs the plan. `esc`
+  closes it and runs nothing: the log line and session log say `preview
+  cancelled`, and the selection stays. A blocked plan shows `✗ the source
+  tree has uncommitted changes; commit or remove them first:` and the
+  stray paths, or `✗ preview failed: <error>`, and only `esc Close`. When
+  it opens, the log line shows `✗ the source tree has uncommitted
+  changes` or `✗ preview failed: <error>`, logged at once with the stray
+  paths or the masked diagnostic; closing it logs nothing more. `R`
+  doesn't work in the modal, nor do the frame's other keys.
 - **Interactive plans** (`e`, `m`, `M`, and `enter` when every target's fix
   is merge) open no modal unless blocked (DEC-4). They run through the
   TUI's terminal runner: the command runs with the terminal under
@@ -644,9 +721,9 @@ would run.
 - **Running.** The log line says `running…` until the result; `esc` doesn't
   cancel a write (§5).
 - **Result.** One session-log entry per command result, in order, a failed
-  one followed by its whole masked stderr indented two spaces, a refused
-  one by its stray paths; then `not run: <action> <targets>` for each
-  command left unrun. The log line joins the command results' lines with
+  one followed by its whole masked stderr indented two spaces (its error
+  when stderr is empty, DEC-36), a refused one by its stray paths; then
+  `not run: <action> <targets>` for each command left unrun. The log line joins the command results' lines with
   `; ` (in the error colour if any failed), or shows `✗ <reason>` when
   nothing ran. A command's line, where `<targets>` is the one target in
   `~` form or `N targets` (the first three rows are the lines `cheztui
@@ -662,12 +739,15 @@ would run.
   | ran, result unreadable | `✗ <action> <targets> ran, but reading the result failed: <error>` |
 
   The verbs are `applied`, `re-added`, `forgot`, `edited`, `merged`,
-  `added`. After any execution attempt the selection is cleared and the
-  view refreshes (§5).
+  `added`. After every execution, whatever it ran, the selection is
+  cleared and the view refreshes (§5); that refresh keeps the result on
+  the log line unless it fails or is cancelled (§4 Log line). A cancelled
+  preview executes nothing, so neither happens.
 - **`d`** suspends and runs `chezmoi diff <target>` through the terminal
   runner, so chezmoi's pager and diff command apply. It is a read, not a
   write: no pre-flight, and it runs under `-n`. A non-zero exit shows
-  `✗ chezmoi diff exited N` in the log line and session log.
+  `✗ chezmoi diff exited N` in the log line and session log; a zero exit
+  changes neither, and no refresh follows.
 
 ### 2 · Files
 
@@ -1104,10 +1184,63 @@ dry run.
 ### Skill
 
 `skills/cheztui/SKILL.md` ships in the repo and is deployed by tack (as
-corral's is). It covers: when to use cheztui (any change to a file that is
-or might be chezmoi-managed), use the CLI with `--json` not the TUI, the
-edit flow (read source → write spec → `--dry-run` → apply), ops reference,
-new files, exit codes, and read commands for looking before acting.
+corral's is); the repo is also a Claude Code plugin marketplace for it
+(`.claude-plugin/`). It covers: when to use cheztui (any change to a file
+that is or might be chezmoi-managed), use the CLI with `--json` not the TUI,
+the edit flow (read source → write spec → `--dry-run` → apply), ops
+reference, new files, exit codes, and read commands for looking before
+acting.
+
+Its frontmatter `name` is `cheztui`, and its `description` says when to
+load it: changing a file that is or might be chezmoi-managed (a shell alias
+or function, a dotfile, config under `~/.config`), adding a new file to
+chezmoi, and checking what drifted. Its body, in this order (DEC-39):
+
+1. **Look before acting.** `cheztui status --json` and
+   `cheztui verify --json`, with what their fields mean (§7). `cheztui
+   edit` itself says whether a target is managed; `chezmoi source-path
+   <target>` finds the source to read.
+2. **Edit a managed file.** Read the source and copy each anchor out of it
+   verbatim, leading whitespace and final newline included; write the ops
+   spec to a file; `cheztui edit <target> --ops FILE --dry-run --json` and
+   read the diff; then the same without `--dry-run`; report `commit` and
+   `pushed` from the result (DEC-19). One target per call (DEC-11). A
+   template's ops apply to its source text (`template: true`), and
+   `chezmoi cat <target>` shows what lands. An encrypted target's source is
+   ciphertext: its plaintext comes from `chezmoi decrypt <source>` and
+   holds its secrets, so the agent reads it only with the user's go-ahead.
+   After an edit to a shell startup file, the agent tells the user to
+   `source` it or open a new shell.
+3. **The ops reference.** Each op and its fields, `count` as an assertion,
+   `skip_if_contains`, a bare list (§8 Ops spec), and what the common
+   failures (`no match found`, `matched N time(s)`, `ops produced no
+   change`) mean.
+4. **New files.** Write the file at its target path, then
+   `cheztui add <path> --dry-run --json`, then the same without
+   `--dry-run`; `--template` and `--encrypt` when wanted. A managed path is
+   refused: edit it instead.
+5. **Refusals.** What each means and what the agent does: not managed →
+   `cheztui add`; drifted → show the user the `cheztui status` row and ask,
+   passing `--allow-drift` only when the user says to overwrite the
+   target's change; a dirty source tree → name the `stray` files to the
+   user and stop, never committing, stashing or deleting them; chezmoi's
+   `edit.command` set → tell the user. Masked diffs are expected for
+   encrypted and `always_mask` files: `--reveal` only when the user asks to
+   see the content.
+6. **Exit codes and JSON** (§7, §8): the success and refusal shapes, and
+   exit 0, 1, 2 and 3; a skip exits 0 with `skipped: true`. Exit 3 names a
+   chezmoi that is missing, older than 2.60, or failing; `cheztui` not
+   found means it isn't installed (Homebrew or PyPI, as README.md says).
+7. **Beyond cheztui.** Forgetting, renaming, removing and changing a
+   managed file's attributes aren't in cheztui's CLI yet: the agent uses
+   chezmoi's own command, after checking `git -C "$(chezmoi source-path)"
+   status --short` is clean, since chezmoi may commit and push the whole
+   source tree at once.
+
+Global flags (`--source`, `--destination`, `--chezmoi-config`) appear once,
+for setups that need them. The skill names no private paths and no other
+skill. Every `cheztui` command line in its `sh` blocks parses with
+cheztui's own argument parser, which a test checks (§11).
 
 **Retiring `chezmoi-edit`:** once cheztui v0.1 is released and the
 `cheztui` skill is deployed, it replaces the `chezmoi-edit` skill.
@@ -1139,8 +1272,9 @@ The screen (DEC-33) lists one row per scalar, `key  value`, in the order
 `refresh.debounce_ms`, `secrets.token_formats`. `enter` on a boolean
 toggles it; on `ui.theme` it opens a list of the themes Textual knows; on
 an integer it opens an input on the row. A change is validated as the file
-would be, saved at once, and takes effect at once (the theme and the
-layout immediately; the others where they are next read). An invalid value
+would be, saved at once, and takes effect at once (the theme, the
+layout and `refresh.*` immediately, §5 Refresh; the others where they are
+next read). An invalid value
 shows its error on the row and isn't saved. A valid value that can't be
 written (a read-only file, a full disk) shows the save error on the row
 and is put back, so the screen, the file and what is in effect keep the
@@ -1215,7 +1349,10 @@ src/cheztui/
   only events on managed paths. Events are debounced by
   `refresh.debounce_ms`; events during cheztui's own write are dropped, and
   the write's own refresh covers them. `refresh.watch = false` leaves only
-  `g` and the post-write refresh.
+  `g` and the post-write refresh. `watch.py` knows nothing of Textual or
+  chezmoi: given a source dir, the targets and a debounce, it calls back
+  when a refresh is due, and can be paused and resumed. The TUI owns what
+  a refresh does and when one waits (DEC-37).
 - `chezmoi.py` takes a runner, so TUI tests swap in `tests/fake_chezmoi.py`
   and integration tests run the real binary against scratch dirs. A runner
   is an async callable `(argv, *, cwd=None, env=None, stdin=None)` returning
@@ -1278,6 +1415,11 @@ src/cheztui/
   drift from what real chezmoi prints.
 - **TUI:** `App.run_test()` + snapshot tests (pytest-textual-snapshot) for
   each view and the preview modal.
+- **Skill:** `tests/test_skill.py` parses every `cheztui` line in the
+  skill's `sh` blocks with the CLI's parser, and runs the skill's flow
+  (`status`, `edit --dry-run`, `edit`, `add`, `verify`, each with
+  `--json`) as a subprocess in the scratch setup, checking §7's and §8's
+  shapes and exit codes.
 - CI: macOS and Linux, pytest, ruff check/format, ty, packaging check. The
   test job installs chezmoi at the floor version (DEC-21), so integration
   tests run in CI against the oldest chezmoi cheztui supports, while a

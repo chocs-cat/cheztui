@@ -1,5 +1,8 @@
 # Contributing
 
+Outside pull requests aren't taken yet; [issues](https://github.com/chocs-cat/cheztui/issues)
+and bug reports are welcome.
+
 ## Setup
 
 ```sh
@@ -21,19 +24,25 @@ each depending only on the ones above it; they arrive with the milestones:
 | `git.py` | source-repo queries: porcelain status, ahead/behind, log, `HEAD` |
 | `config.py` | `~/.config/cheztui/config.toml`, loaded and saved with tomlkit |
 | `edit.py` | the ops-spec engine and the `_editor` entry point |
-| `secrets.py`, `state.py`, `preview.py`, `watch.py` | masking, chezmoi's persistent state, new-machine previews, file watching |
+| `secrets.py`, `watch.py` | masking, file watching |
+| `state.py`, `preview.py` | chezmoi's persistent state (v0.3) and new-machine previews (v0.5); not written yet |
 | `ops.py` | the operations, returning dataclasses |
 | `cli.py` | argparse front end, human and `--json` output |
 | `tui/` | the Textual app, its views and widgets |
 
 The CLI and the TUI both go through `ops`, so put behaviour changes there.
 
-In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar) and
-its reads; `keys.py` declares every key once, and the Textual bindings, the
-key bar, help and the palette are all generated from it; `views/base.py` is
-the list and detail panes with the filter and the selection, which each view
-in `views/` fills (`drift.py` so far); `screens.py` holds help, the palette
-and the session log, and `settings.py` the settings screen.
+In `tui/`, `app.py` is the frame (header, view tabs, log line, key bar),
+its reads and its one write worker, with the terminal runner
+(`run_in_terminal`, the app's `terminal_runner`) that runs edit, merge and
+`d` under `App.suspend()`; `keys.py` declares every key once, and the
+Textual bindings, the key bar, help and the palette are all generated from
+it; `views/base.py` is the list and detail panes with the filter and the
+selection, which each view in `views/` fills (`drift.py` so far, with the
+Drift actions' keys); `widgets/diff.py` colours a unified diff by line
+kind, and `widgets/confirm.py` is the preview modal over a `WritePlan`;
+`screens.py` holds help, the palette and the session log, and
+`settings.py` the settings screen.
 
 Every write goes through `ops.WriteOps` (spec §5 Write flow; DEC-8,
 DEC-27 to DEC-30), one instance per front end:
@@ -64,20 +73,31 @@ DEC-27 to DEC-30), one instance per front end:
   mode they never start.
 
 Plans and results hold masked text only: raw chezmoi output stays inside
-the write path. The scripted CLI commands drive `WriteOps`; the TUI's
-actions arrive with the rest of v0.1. Tests also drive `WriteOps` directly,
-with `tests/fake_write.py` for fakes and the scratch setup for the real
-binary.
+the write path. The scripted CLI commands and the Drift view's actions
+drive `WriteOps`, and both word a command's result with `ops.outcome_line`
+(DEC-35); the TUI only lays out, suspends and logs. Tests also drive
+`WriteOps` directly, with `tests/fake_write.py` for fakes and the scratch
+setup for the real binary.
 
 TUI tests run the app with `App.run_test()` on `tests/fake_chezmoi.py`,
 which extends the write path's fake to answer chezmoi's and git's reads
-from a canned state; its `drifted()` state replays the recorded fixtures.
+from a canned state; its `drifted()` state replays the recorded fixtures,
+and `drifted(root)` puts them under a real root with the home's files
+created, so eligibility sees what chezmoi left. Tests replace the app's
+`terminal_runner`, since a headless run can't suspend. A conftest fixture
+makes the app's watcher a fake from `tests/watching.py`, whose `due()`
+stands in for a change; the tests that watch real files set
+`app.watcher_factory` to `watch.Watcher` and use that file's helpers,
+which poll rather than sleep and show a missing refresh with a sentinel
+change after it.
 Snapshot tests (pytest-textual-snapshot) keep the expected screens as SVGs
 in `tests/__snapshots__/`. After a deliberate change to what a screen
 shows, rewrite them with `uv run pytest --snapshot-update` and review the
 changed SVGs in the pull request like code: open them in a browser, or
 `rsvg-convert -w 1400 x.svg -o x.png`. A failed run writes
-`snapshot_report.html` with the differences.
+`snapshot_report.html` with the differences. Snapshots run the app with
+`App.run()`, where Textual starts tasks eagerly: a worker on the fake can
+finish before `run_worker` returns, which `run_test()` never shows.
 
 Tests never touch your real chezmoi source or home directory: they build
 scratch ones and pass them to chezmoi with `--source`, `--destination` and
@@ -85,6 +105,11 @@ scratch ones and pass them to chezmoi with `--source`, `--destination` and
 chezmoi need chezmoi 2.60 or later on `PATH` and skip without it; CI runs
 them against 2.60.0, the oldest supported. The parsers' recorded output is in
 `tests/fixtures/chezmoi/`, whose README says how to record it again.
+
+`tests/test_skill.py` holds the agent skill, `skills/cheztui/SKILL.md`, to
+the CLI: every `cheztui` line in its `sh` blocks must parse, and its flow
+runs end to end. A change to a command or flag updates the skill, or that
+test fails.
 
 ## Roadmap and decisions
 
@@ -152,9 +177,8 @@ add a `Release-As: 1.0.0` footer to a commit.
   and **Pull requests** read/write. Release PRs are then opened under your
   name and CI runs on them by itself. Renew the token before it expires; if
   it lapses, release-please fails until you replace it or delete the secret.
-- **Branch protection:** require **CI passed** and **conventional commit
-  titles** on `master`. GitHub Free doesn't offer protection on private
-  repos, so this waits until the repo is public.
+- **Branch protection:** `master` requires **CI passed** and
+  **conventional commit titles**, admins included.
 
 ### Homebrew
 
@@ -162,7 +186,9 @@ The formula is `Formula/cheztui.rb` in
 [chocs-cat/homebrew-tap](https://github.com/chocs-cat/homebrew-tap), written by
 `scripts/formula.py`: don't edit it in the tap, change the script's template.
 It builds from the PyPI sdist, depends on `chezmoi`, and has a `resource` for
-each runtime dependency at the version the release's `uv.lock` pins. To redo a
-version's formula, run the **Formula** workflow by hand with that version.
+each runtime dependency at the version the release's `uv.lock` pins. It also
+needs Rust at build time, since watchfiles builds from its sdist (DEC-12). To
+redo a version's formula, run the **Formula** workflow by hand with that
+version.
 Locally, point `--root` at a checkout of its tag, which the lock comes from:
 `uv run --script scripts/formula.py X.Y.Z --root ../cheztui-vX.Y.Z > cheztui.rb`.

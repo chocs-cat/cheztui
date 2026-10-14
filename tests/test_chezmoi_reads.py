@@ -8,6 +8,7 @@ fixtures; tests/fixtures/chezmoi/README.md says how to run it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -24,11 +25,13 @@ from cheztui.chezmoi import (
     parse_state_dump,
     parse_status,
 )
+from cheztui.ops import ACTION_ARGS, PREVIEW_FLAGS, drift
 from tests.conftest import Scratch, requires_chezmoi
 
 FIXTURES = Path(__file__).parent / "fixtures" / "chezmoi"
 ROOT = Path("/scratch")
 HOME = ROOT / "home"
+DIFF_ARGS = ("diff", "--no-pager", "--color=false", "--use-builtin-diff")  # Chezmoi.diff
 
 
 def fixture(name: str) -> str:
@@ -39,8 +42,8 @@ def build_drift(s: Scratch) -> None:
     """A source and home with one of each kind of row the Drift view tells apart.
 
     `.mine` you→ (MM) · `.both file` both (MM) · `.tool` src→ ( M), executable ·
-    `hello.sh` an onchange script ( R) · `.gone` deleted (DA) · `.tmplfile` a
-    template · `.dir` a directory · `.link` a symlink.
+    `.tmplfile` src→ ( M), a template · `hello.sh` an onchange script ( R) ·
+    `.gone` deleted (DA) · `.dir` a directory · `.link` a symlink.
     """
     h = s.home
     (h / ".mine").write_text("mine\n")
@@ -67,6 +70,7 @@ def build_drift(s: Scratch) -> None:
     with (s.source / "executable_dot_tool").open("a") as f:
         f.write("echo more\n")
     (s.source / "run_onchange_hello.sh").write_text("#!/bin/sh\necho changed >/dev/null\n")
+    (s.source / "dot_tmplfile.tmpl").write_text('{{ "tmpl" | upper }}\n{{ "more" | upper }}\n')
     (h / ".gone").unlink()
 
 
@@ -79,6 +83,7 @@ def test_status_fixture():
         ("MM", HOME / ".both file"),
         ("DA", HOME / ".gone"),
         ("MM", HOME / ".mine"),
+        (" M", HOME / ".tmplfile"),
         (" M", HOME / ".tool"),
         (" R", HOME / "hello.sh"),
     ]
@@ -123,6 +128,20 @@ def test_managed_fixture():
     assert both.source_relative == "dot_both file"
 
 
+def test_managed_no_scripts_fixture():
+    # The watch set's read (spec §5 *What is watched*): the script is left out.
+    assert set(parse_managed(fixture("managed-no-scripts.json"))) == {
+        ".both file",
+        ".dir",
+        ".dir/inner",
+        ".gone",
+        ".link",
+        ".mine",
+        ".tmplfile",
+        ".tool",
+    }
+
+
 def test_managed_templates_fixture():
     assert list(parse_managed(fixture("managed-templates.json"))) == [".tmplfile"]
 
@@ -158,7 +177,7 @@ def test_dump_fixture():
     assert entries[".tool"].perm == 0o755 == 493
     assert entries[".mine"].perm == 0o644
     assert entries[".mine"].contents == "mine\n"
-    assert entries[".tmplfile"].contents == "TMPL\n"
+    assert entries[".tmplfile"].contents == "TMPL\nMORE\n"
     assert entries[".dir"].type == "dir"
     assert entries[".dir"].contents is None
     assert entries[".link"].type == "symlink"
@@ -264,13 +283,15 @@ def test_dump_config_malformed(text):
 # --- The fixtures themselves --------------------------------------------------
 
 
-# chezmoi's own default for ejson.keyDir, the same on every machine.
-CHEZMOI_DEFAULT_PATHS = {"/opt/ejson/keys"}
+# chezmoi's own default for ejson.keyDir, and a new file's `---` side in a
+# diff: the same on every machine.
+CHEZMOI_DEFAULT_PATHS = {"/opt/ejson/keys", "/dev/null"}
 
 
 def test_fixtures_hold_no_machine_paths():
-    # An absolute path starts the text, or follows a space or a quote.
-    path = re.compile(r'(?:^|[\s"])(/[^\s"]*)', re.MULTILINE)
+    # An absolute path starts the text, or follows a space or a quote; it ends
+    # at a JSON string's escape, as in diff.json's `\n`.
+    path = re.compile(r'(?:^|[\s"])(/[^\s"\\]*)', re.MULTILINE)
     for f in FIXTURES.iterdir():
         for p in path.findall(f.read_text()):
             assert p in CHEZMOI_DEFAULT_PATHS or p == "/scratch" or p.startswith("/scratch/"), (
@@ -293,6 +314,7 @@ async def test_live_reads(scratch: Scratch):
         home / ".both file": "MM",
         home / ".gone": "DA",
         home / ".mine": "MM",
+        home / ".tmplfile": " M",
         home / ".tool": " M",
         home / "hello.sh": " R",
     }
@@ -358,6 +380,12 @@ def test_record_fixtures(scratch: Scratch, monkeypatch: pytest.MonkeyPatch):
             "--path-style=all",
             "--include=templates",
         ],
+        "managed-no-scripts.json": [
+            "managed",
+            "--format=json",
+            "--path-style=all",
+            "--exclude=scripts",
+        ],
         "dump.json": ["dump", "--format=json"],
         "state-dump.json": ["state", "dump", "--format=json"],
         "dump-config.json": ["dump-config", "--format=json"],
@@ -365,4 +393,23 @@ def test_record_fixtures(scratch: Scratch, monkeypatch: pytest.MonkeyPatch):
     for name, args in outputs.items():
         text = scratch.run(*args).stdout.replace(str(scratch.root), str(ROOT))
         (FIXTURES / name).write_text(text)
+    # The Drift detail's diff for every status row, keyed by its /scratch target.
+    diffs = {}
+    for row in parse_status(scratch.run("status", "--path-style=absolute").stdout):
+        done = scratch.run(*DIFF_ARGS, str(row.target))
+        diffs[str(row.target).replace(str(scratch.root), str(ROOT))] = done.stdout.replace(
+            str(scratch.root), str(ROOT)
+        )
+    (FIXTURES / "diff.json").write_text(json.dumps(diffs, indent=2, sort_keys=True) + "\n")
+    # The write previews' dry runs (spec §5 Drift command plans), before anything
+    # writes: apply on every status row, re-add on the you→ file rows.
+    rows = asyncio.run(drift(scratch.chezmoi())).rows
+    readd = [r.target for r in rows if r.direction == "you" and r.target.is_file()]
+    previews: dict[str, dict[str, str]] = {"apply": {}, "re-add": {}}
+    for action, targets in (("apply", [r.target for r in rows]), ("re-add", readd)):
+        for target in targets:
+            done = scratch.run(*ACTION_ARGS[action], *PREVIEW_FLAGS, str(target))
+            key = str(target).replace(str(scratch.root), str(ROOT))
+            previews[action][key] = done.stdout.replace(str(scratch.root), str(ROOT))
+    (FIXTURES / "preview.json").write_text(json.dumps(previews, indent=2, sort_keys=True) + "\n")
     test_fixtures_hold_no_machine_paths()

@@ -105,7 +105,8 @@ class Commands(Provider):
         return cast("CheztuiApp", self.app)
 
     def _entries(self) -> list[tuple[str, Key]]:
-        return [(k.label or k.description, k) for k in self.cheztui.palette_keys]
+        app = self.cheztui
+        return [(app.key_label(k) or k.description, k) for k in app.palette_keys]
 
     def _display(self, name: Content, key: Key) -> Content:
         return Content.assemble(name, "  ", (key.keys, "bold $accent"))
@@ -114,7 +115,7 @@ class Commands(Provider):
         for name, key in self._entries():
             yield DiscoveryHit(
                 self._display(Content(name), key),
-                partial(self.cheztui.run_action, key.action),
+                partial(self.cheztui.run_key, key),
                 text=name,
             )
 
@@ -126,7 +127,7 @@ class Commands(Provider):
                 yield Hit(
                     score,
                     self._display(matcher.highlight(name), key),
-                    partial(self.cheztui.run_action, key.action),
+                    partial(self.cheztui.run_key, key),
                     text=name,
                 )
 

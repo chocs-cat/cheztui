@@ -6,6 +6,7 @@ Every command that reaches chezmoi passes the scratch `--chezmoi-config`,
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -101,6 +102,17 @@ def test_without_a_terminal_prints_help(monkeypatch, capsys):
     assert capsys.readouterr().out.startswith("usage: cheztui")
 
 
+@pytest.mark.parametrize("command", ["edit", "add"])
+def test_every_edit_and_add_argument_has_help(command):
+    commands = next(
+        a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    actions = [a for a in commands.choices[command]._actions if a.dest != "help"]
+    assert len(actions) >= 5
+    for action in actions:
+        assert action.help, action.option_strings or action.dest
+
+
 def flags(s: Scratch) -> list[str]:
     return [
         "--chezmoi-config",
@@ -143,6 +155,7 @@ def test_status_json(scratch: Scratch, capsys):
             row(".both file", "dot_both file", "both", "merge", "MM"),
             row(".gone", "dot_gone", "you", "apply", "DA"),
             row(".mine", "dot_mine", "you", "re-add", "MM"),
+            row(".tmplfile", "dot_tmplfile.tmpl", "src", "apply", " M", ["tmpl"]),
             row(".tool", "executable_dot_tool", "src", "apply", " M", ["exec"]),
             row("hello.sh", "run_onchange_hello.sh", "run", "apply", " R"),
         ]
@@ -172,6 +185,7 @@ def test_status_human(scratch: Scratch, capsys):
         "both  MM  ~/.both file  merge\n"
         "you→  DA  ~/.gone       apply\n"
         "you→  MM  ~/.mine       re-add\n"
+        "src→   M  ~/.tmplfile   apply   tmpl\n"
         "src→   M  ~/.tool       apply   exec\n"
         "run    R  ~/hello.sh    apply\n"
     )
@@ -185,11 +199,15 @@ def test_verify_json_and_human_on_drift(scratch: Scratch, capsys):
     assert code == 1
     assert json.loads(out) == {
         "verified": False,
-        "failing": [str(h / n) for n in (".both file", ".gone", ".mine", ".tool", "hello.sh")],
+        "failing": [
+            str(h / n) for n in (".both file", ".gone", ".mine", ".tmplfile", ".tool", "hello.sh")
+        ],
     }
     code, out, _ = run(scratch, capsys, "verify")
     assert code == 1
-    assert out == ("✗ verify\n  ~/.both file\n  ~/.gone\n  ~/.mine\n  ~/.tool\n  ~/hello.sh\n")
+    assert out == (
+        "✗ verify\n  ~/.both file\n  ~/.gone\n  ~/.mine\n  ~/.tmplfile\n  ~/.tool\n  ~/hello.sh\n"
+    )
 
 
 @requires_chezmoi

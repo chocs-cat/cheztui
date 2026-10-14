@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from cheztui import watch
 from cheztui.chezmoi import Chezmoi
+from tests.watching import Watchers
 
 requires_chezmoi = pytest.mark.skipif(
     shutil.which("chezmoi") is None, reason="chezmoi is not installed"
@@ -109,3 +111,13 @@ def scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Scratch:
     s.set_auto_commit(False)
     subprocess.run(["git", "init", "-q", "-b", "master", str(s.source)], check=True)
     return s
+
+
+@pytest.fixture(autouse=True)
+def watchers(monkeypatch: pytest.MonkeyPatch) -> Watchers:
+    """The app's default watcher factory, made fake: a TUI test watches no real
+    dir unless it sets `app.watcher_factory` to the real `Watcher` (spec §5
+    *Watching in the TUI*)."""
+    factory = Watchers()
+    monkeypatch.setattr(watch, "Watcher", factory)
+    return factory

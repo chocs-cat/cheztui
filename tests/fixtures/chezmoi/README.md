@@ -10,19 +10,22 @@ scratch root is replaced with `/scratch`, so no machine path is committed;
 |---|---|
 | `status.txt` | `chezmoi status --path-style=absolute` |
 | `managed.json` | `chezmoi managed --format=json --path-style=all` |
+| `managed-no-scripts.json` | `chezmoi managed --format=json --path-style=all --exclude=scripts` |
 | `managed-templates.json` | `chezmoi managed --format=json --path-style=all --include=templates` |
 | `dump.json` | `chezmoi dump --format=json` |
 | `state-dump.json` | `chezmoi state dump --format=json` |
 | `dump-config.json` | `chezmoi dump-config --format=json` |
+| `diff.json` | `chezmoi diff --no-pager --color=false --use-builtin-diff <target>` for each status row, keyed by the target |
+| `preview.json` | the write previews' dry runs (`ops.PREVIEW_FLAGS`: `--dry-run --verbose --no-pager --color=false --use-builtin-diff`): `apply --force --recursive=false <target>` for each status row, and `re-add --recursive=false <target>` for each `you→` row whose target is a file, keyed by the action, then the target. They run before anything writes |
 
 Every command also runs with `--no-tty` and scratch `--config`, `--source`
 and `--destination`.
 
 The setup has a `you→` row (`.mine`, `MM`), a `both` row whose name has a
 space (`.both file`, `MM`), a `src→` row on an executable file (`.tool`,
-` M`), an onchange script (`hello.sh`, ` R`), a deleted target (`.gone`,
-`DA`), a template (`.tmplfile`), a directory (`.dir`) and a symlink
-(`.link`).
+` M`), a `src→` row on a template whose source changed after the apply
+(`.tmplfile`, ` M`), an onchange script (`hello.sh`, ` R`), a deleted
+target (`.gone`, `DA`), a directory (`.dir`) and a symlink (`.link`).
 
 To record them again, with the chezmoi you want first on `PATH`:
 

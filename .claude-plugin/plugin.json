@@ -1,7 +1,7 @@
 {
   "name": "cheztui",
   "version": "0.0.0",
-  "description": "Agent skill for cheztui: make safe, previewed edits to chezmoi-managed dotfiles from Claude Code.",
+  "description": "Agent skill for cheztui: check what drifted and make previewed, verified edits to chezmoi-managed dotfiles.",
   "author": {
     "name": "John Foland",
     "email": "john@johnfoland.net"

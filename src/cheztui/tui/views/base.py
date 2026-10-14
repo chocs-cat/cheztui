@@ -10,7 +10,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
-from textual.widgets import Input, OptionList, Static
+from textual.message import Message
+from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
 from cheztui.tui.keys import Key
@@ -47,7 +48,11 @@ class ListDetail(Container, Generic[Row]):
     sequence, empty when there's nothing to list; `message` replaces them
     with a line such as a read's error. The filter and the selection
     belong to the list: the selection is a set of targets (spec §4 List).
+    The detail is a head, a rule and a body.
     """
+
+    class Changed(Message):
+        """The current row or its detail changed: the key bar may need redrawing."""
 
     NAME: ClassVar[str] = ""
     KEYS: ClassVar[tuple[Key, ...]] = ()
@@ -67,10 +72,33 @@ class ListDetail(Container, Generic[Row]):
         raise NotImplementedError
 
     def label(self, row: Row) -> str:
+        """The row's target as shown: what the filter matches (spec §4 List)."""
         raise NotImplementedError
 
-    def detail(self, row: Row) -> str:
-        raise NotImplementedError
+    def content(self, row: Row) -> Content:
+        """The row's list line after the gutter; by default its label."""
+        return Content(self.label(row))
+
+    def head(self, row: Row) -> Content | str:
+        return ""
+
+    def body(self, row: Row) -> Content | str:
+        return ""
+
+    def key_label(self, key: Key) -> str:
+        """The key bar's word for one of the view's keys, which may follow its state."""
+        return key.label
+
+    def reset_detail(self) -> None:
+        """A refresh started: drop whatever the detail keeps until the next one."""
+
+    @property
+    def can_reveal(self) -> bool:
+        """Whether `R` works on the detail now (spec §5 Keys)."""
+        return False
+
+    def toggle_reveal(self) -> None:
+        """`R`: reveal the detail's masked values, or mask them again."""
 
     # The panes.
 
@@ -81,6 +109,8 @@ class ListDetail(Container, Generic[Row]):
                 yield Static(id="list-message", markup=False)
                 yield FilterInput(id="filter", placeholder="filter", compact=True)
             with Detail(id="detail"):
+                yield Static(id="detail-head", markup=False)
+                yield Rule(id="detail-rule")
                 yield Static(id="detail-body", markup=False)
 
     @property
@@ -140,11 +170,22 @@ class ListDetail(Container, Generic[Row]):
 
     def _prompt(self, row: Row) -> Content:
         gutter = SELECTED if self.key(row) in self.selected else " "
-        return Content.assemble(gutter, " ", self.label(row))
+        return Content.assemble(gutter, " ", self.content(row))
 
     def _render_detail(self) -> None:
         row = self.current()
-        self.query_one("#detail-body", Static).update("" if row is None else self.detail(row))
+        if row is None:
+            self.show_detail(None, "")
+        else:
+            self.show_detail(self.head(row), self.body(row))
+
+    def show_detail(self, head: Content | str | None, body: Content | str) -> None:
+        """Fill the detail pane; with no head, there's no rule either."""
+        self.query_one("#detail-head", Static).update(head or "")
+        self.query_one("#detail-head").display = head is not None
+        self.query_one("#detail-rule").display = head is not None
+        self.query_one("#detail-body", Static).update(body)
+        self.post_message(self.Changed())
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         event.stop()
@@ -158,6 +199,11 @@ class ListDetail(Container, Generic[Row]):
         if listing.option_count and listing.highlighted is not None:
             target = listing.highlighted + step
             listing.highlighted = max(0, min(target, listing.option_count - 1))
+
+    def clear_selection(self) -> None:
+        self.selected.clear()
+        if self.rows is not None:
+            self._render_rows()
 
     def toggle_selected(self) -> None:
         row = self.current()

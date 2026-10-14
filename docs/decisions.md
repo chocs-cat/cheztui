@@ -147,7 +147,14 @@ commit. Agents call it once per file. Its ops spec stays compatible with the
 `chocs-cat/tap/cheztui` declares `depends_on "chezmoi"`. cheztui does nothing
 without the chezmoi binary.
 
-*Where:* `docs/spec.md` §2; `scripts/formula.py`.
+Amended 2026-10-14: the formula also declares `depends_on "rust" => :build`.
+Homebrew builds every resource from its sdist, and watchfiles is a Rust
+extension (maturin), so without a Rust toolchain the install fails; the
+homebrew-core formulas that vendor watchfiles do the same. It is listed
+first, as `brew audit` orders build dependencies, and unconditionally,
+since watchfiles is a direct dependency.
+
+*Where:* `docs/spec.md` §2; `scripts/formula.py`; CONTRIBUTING.md (Homebrew).
 
 ## DEC-13: Every read and write goes through the chezmoi binary (2026-10)
 
@@ -564,6 +571,12 @@ written into `docs/spec.md` §6 (Rows and detail in the TUI) and §9.
 - `R` re-reads the body unmasked instead of keeping the clear text beside
   the masked one, so nothing unmasked outlives the pane (DEC-17, DEC-30).
 
+*Amended 2026-10 (#38):* a failed body read isn't kept. Moving back to the
+row (or back to that body with `t`) reads it again, and a second failure
+is logged again. A failure is usually transient (a lock, a moved file), and
+a kept one would show a stale error until `g`; a re-read costs one chezmoi
+call and logs nothing when it succeeds.
+
 *Where:* `docs/spec.md` §6 (Drift), §9.
 
 ## DEC-35: How Drift actions run in the TUI (2026-10)
@@ -587,4 +600,127 @@ TUI).
 - `d` is a read run in the terminal, not a write: it needs no pre-flight
   and works under `-n`.
 
-*Where:* `docs/spec.md` §6 (Drift).
+*Amended 2026-10:* the edges the actions left open.
+
+- The refresh after a write leaves the result on the log line. DEC-33's
+  amendment empties the log line after a successful read, which would wipe
+  the result a moment after it appears; the result is what needs reading,
+  and a failed or cancelled refresh still replaces it.
+- After every execution, whatever ran, the selection is cleared and the
+  view refreshes, rather than only when a command was attempted: a refusal
+  at execution means the tree changed under the preview, and the rows on
+  screen are then the ones most likely to be stale.
+- `esc` in a confirmable preview logs `preview cancelled`, as cancelling the
+  preparation does, since every cancellation is logged (DEC-33). A blocked
+  plan's reason and stray files are logged when its modal opens, so they
+  outlive the modal rather than depending on how it is closed.
+- While a write is prepared or runs, `g` doesn't work: the write's own
+  refresh follows, and a read racing chezmoi's write could show a half
+  state. `esc` cancels a preparation before a read, since the preparation
+  is what the user just started.
+- Preview entry lines put the direction before the target, as the Drift
+  rows do, so the two lists read the same way.
+
+*Where:* `docs/spec.md` §4 (Log line), §6 (Drift).
+
+## DEC-36: The preview's and the result's small edges (2026-10)
+
+Building the Drift actions (#42) met four edges spec §6 *Actions in the
+TUI* left open; these are the choices, written into it.
+
+- While a confirmable preview is open the log line is empty: the
+  preparation it said `preparing…` for has ended, and nothing has run.
+  A blocked plan's line stays, since it is the reason (DEC-35).
+- An entry whose dry run printed nothing shows `(no diff)`, as the detail
+  does, and `(no preview)` stays for an entry with no dry run (a merge, an
+  excluded row). The two mean different things: chezmoi was asked and had
+  nothing to say, or wasn't asked.
+- With nothing ticked, `nothing ticked` takes `enter Run`'s place at the
+  start of the footer, so the footer never offers a key that does nothing.
+- A failed command whose stderr is empty is logged with its short error
+  as the diagnostic, as a failed read is (spec §5 Diagnostics' `chezmoi
+  <action> exited <code>`), so every failure entry has a body.
+
+*Where:* `docs/spec.md` §6 (Drift, *Actions in the TUI*).
+
+## DEC-37: How watching refreshes the TUI (2026-10)
+
+Spec §5 *Refresh* and §10 named what is watched and that a write's own
+events are dropped; building it needs the edges those lines left open.
+These are the choices, written into §5 *Watching in the TUI*.
+
+- A watch refresh is quiet: it doesn't say `reading chezmoi…`, and a
+  success leaves the log line as it was. The user didn't ask for it, and
+  saving a file elsewhere shouldn't wipe a result or an error still worth
+  reading, as DEC-35 keeps a write's result through its own refresh. A
+  failure or cancellation still replaces the line, so a broken read is
+  never hidden.
+- A watch refresh never cancels a read: one that falls due mid-read waits
+  and runs once after it, since the running read may have read the file
+  before it changed.
+- The watch set needs every managed target, and the Drift read reads
+  `managed` only when something drifted, so an in-sync view, the one
+  waiting for the next change, would have no targets to watch. The TUI's
+  read adds `managed --exclude=scripts` while watching is on; the source
+  dir comes from the header's `dump-config`.
+- A write pauses watching from execution until its refresh ends, rather
+  than filtering the write's events out after the debounce: the debounce
+  would deliver them after the refresh, as a second one. While a write is
+  only being prepared nothing has written, so a refresh that falls due
+  waits and runs if the write never executes, and the view isn't left
+  stale by a cancelled preview.
+- Paths are compared with their parent dirs resolved: macOS reports
+  `/private/var/…` for a dir watched as `/var/…`, and resolving the
+  target itself would lose a managed symlink.
+- `refresh.*` take effect at once from the settings screen: a watcher
+  left running after `watch = false` would read as a broken setting.
+
+*Where:* `docs/spec.md` §4 (Log line), §5 (Refresh), §9, §10.
+
+## DEC-38: Edges of watching found while building it (2026-10)
+
+Added 2026-10-13 in #48. Two cases spec §5 *Watching in the TUI* left
+open.
+
+- `esc` on a read also drops a watch refresh waiting for that read to
+  end. The user chose to stop reading; starting a read the moment they
+  cancel one would undo that. The watcher keeps running, so the next
+  change, or `g`, reads again.
+- The source dir is resolved whole (`os.path.realpath`), not by its
+  parent alone as targets are. A path under it is compared with its
+  parent resolved, which resolves through a symlinked source dir; a
+  source dir compared by its link name would then never contain it, and
+  no source change would count.
+
+*Where:* `docs/spec.md` §5 (Watching in the TUI); `src/cheztui/watch.py`,
+`src/cheztui/tui/app.py`.
+
+## DEC-39: What the agent skill tells agents to do (2026-10)
+
+Added 2026-10-14. `skills/cheztui/SKILL.md` runs unattended, in an agent
+that will reach for any flag that makes a refusal go away. cheztui's
+refusals are its safety, so the skill says what each one asks of the agent
+rather than how to get past it:
+
+- Agents use the `--json` CLI, never the TUI, which needs a person at the
+  keys.
+- `--allow-drift` overwrites the target's own change, so it is passed only
+  when the user says to. A drift refusal goes to the user with the
+  `cheztui status` row.
+- A dirty source tree is the user's work in progress. The agent names the
+  stray files and stops; it never commits, stashes or deletes them to get
+  a clean tree.
+- `--reveal`, and reading an encrypted file's plaintext with
+  `chezmoi decrypt`, put secrets into the agent's transcript, so both wait
+  for the user's go-ahead.
+- What cheztui's CLI doesn't do yet (forget, rename, remove, attributes)
+  goes through chezmoi's own commands after the same clean-tree check
+  `cheztui edit` makes, as the skill cheztui replaces did.
+
+The skill doesn't check or work around chezmoi's autoCommit or autoPush: a
+user who turned them on wants them, and cheztui already blocks a dirty
+tree when they're on (DEC-8). A test parses every `cheztui` command line in
+the skill with the CLI's own parser, so a renamed flag fails the build
+instead of misleading an agent.
+
+*Where:* `docs/spec.md` §8 (Skill), §11; `skills/cheztui/SKILL.md`.

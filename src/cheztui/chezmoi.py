@@ -322,11 +322,17 @@ class Chezmoi:
         return parse_status(await self._text("status", "--path-style=absolute", *map(str, targets)))
 
     async def managed(
-        self, include: Sequence[str] = (), targets: Sequence[str | Path] = ()
+        self,
+        include: Sequence[str] = (),
+        targets: Sequence[str | Path] = (),
+        *,
+        exclude: Sequence[str] = (),
     ) -> dict[str, ManagedEntry]:
         args = ["managed", "--format=json", "--path-style=all"]
         if include:
             args.append(f"--include={','.join(include)}")
+        if exclude:
+            args.append(f"--exclude={','.join(exclude)}")
         return parse_managed(await self._text(*args, *map(str, targets)))
 
     async def dump(self, targets: Sequence[str | Path] = ()) -> dict[str, DumpEntry]:
@@ -335,6 +341,13 @@ class Chezmoi:
     async def cat(self, target: str | Path) -> bytes:
         """The target state's contents as chezmoi would write them, bytes unchanged."""
         return (await self.run("cat", str(target))).stdout
+
+    async def diff(self, target: str | Path) -> str:
+        """chezmoi's built-in diff for one target, no pager or colour (spec §6 Drift, DEC-34)."""
+        done = await self.run(
+            "diff", "--no-pager", "--color=false", "--use-builtin-diff", str(target)
+        )
+        return done.stdout.decode("utf-8", errors="replace")
 
     async def entry_state(self) -> dict[Path, EntryState]:
         return parse_state_dump(await self._text("state", "dump", "--format=json"))

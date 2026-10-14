@@ -16,6 +16,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -269,6 +270,188 @@ async def repo_state(chezmoi: Chezmoi, *, git_runner: Runner = run_subprocess) -
     return RepoState(config.source_dir, branch, ahead_behind, len(stray))
 
 
+# --- The watch set (spec §5 Watching in the TUI, DEC-37) ---------------------
+
+
+async def watch_targets(chezmoi: Chezmoi) -> tuple[Path, ...]:
+    """The managed targets a watcher watches, sorted: every one but the scripts,
+    which have no target (spec §5 *What is watched*).
+
+    Read on its own, since the Drift read reads `managed` only when something
+    drifted. Errors propagate unmasked, as `drift()`'s do.
+    """
+    managed = await chezmoi.managed(exclude=["scripts"])
+    return tuple(sorted(entry.absolute for entry in managed.values()))
+
+
+# --- The Drift detail's reads (spec §6 Rows and detail in the TUI; DEC-34) ---
+
+
+async def masking_reasons(
+    chezmoi: Chezmoi, masker: Masker, target: Path, source: Path | None, tags: Sequence[str]
+) -> tuple[str, ...]:
+    """A target's whole-masking reasons: `encrypted`, `always_mask`, `secret_template`.
+
+    The one classification the write preview and the Drift detail share
+    (spec §5 Secrets, Drift command plans; DEC-10, DEC-17, DEC-26, DEC-34).
+    """
+    reasons = []
+    if "enc" in tags:
+        reasons.append("encrypted")
+    if masker.masks_whole(target):
+        reasons.append("always_mask")
+    if "tmpl" in tags and source is not None:
+        # The literal source, transient: rendering can't map a line to a call.
+        text = await sanitized(chezmoi.source_text(source), None, whole=True)
+        if calls_secret_function(text):
+            reasons.append("secret_template")
+    return tuple(reasons)
+
+
+_HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_LINES = re.compile(r"[^\n]*\n|[^\n]+\Z")  # lines with their endings, split at `\n` alone
+
+
+def _kind(line: str) -> str:
+    """A hunk line's kind: `+`, `-`, `\\` (no newline at end of file), else context."""
+    return line[0] if line[:1] in ("+", "-", "\\") else " "
+
+
+def _hunk_range(start: int, count: int) -> str:
+    # A count of 1 is left out, as chezmoi's diff prints it.
+    return str(start) if count == 1 else f"{start},{count}"
+
+
+def _cut_hunk(header: str, body: list[str], context: int) -> list[str]:
+    """One hunk cut to `context` lines around its changes (spec §6 Drift).
+
+    `header` is its `@@` line and `body` its lines, each with its ending.
+    """
+    match = _HUNK_HEADER.match(header)
+    assert match is not None
+    suffix = header[match.end() :]  # anything after the second `@@`, and the ending
+    # The next old and new line numbers; a zero count's start is the line before.
+    old = int(match[1]) + (match[2] == "0")
+    new = int(match[3]) + (match[4] == "0")
+    # Each line with the old and new line numbers it starts at, and the lines it
+    # carries: a `\\ No newline at end of file` line goes with the line before.
+    lines: list[tuple[str, int, int, list[str]]] = []
+    for line in body:
+        kind = _kind(line)
+        if kind == "\\" and lines:
+            lines[-1][3].append(line)
+            continue
+        lines.append((kind, old, new, [line]))
+        old += kind in " -"
+        new += kind in " +"
+    changes = [i for i, (kind, *_) in enumerate(lines) if kind in "+-"]
+    if not changes:
+        return [header, *body]
+    groups = [[changes[0], changes[0]]]
+    for i in changes[1:]:
+        if i - groups[-1][1] - 1 > 2 * context:
+            groups.append([i, i])
+        else:
+            groups[-1][1] = i
+    out: list[str] = []
+    for first, last in groups:
+        piece = lines[max(first - context, 0) : last + context + 1]
+        old_at, new_at = piece[0][1], piece[0][2]
+        old_count = sum(kind in " -" for kind, *_ in piece)
+        new_count = sum(kind in " +" for kind, *_ in piece)
+        # A zero count's start is the line before, as in any unified diff.
+        old_range = _hunk_range(old_at if old_count else old_at - 1, old_count)
+        new_range = _hunk_range(new_at if new_count else new_at - 1, new_count)
+        out.append(f"@@ -{old_range} +{new_range} @@{suffix}")
+        out += [text for *_, texts in piece for text in texts]
+    return out
+
+
+def cut_context(diff: str, context: int) -> str:
+    """Cut a unified diff to `context` lines of context (spec §6 Drift, `ui.diff_context`).
+
+    chezmoi's built-in diff has three; with fewer, each hunk keeps at most
+    `context` before its first change and after its last, and a longer run
+    between two changes splits it, each piece with its `@@` line recomputed.
+    Lines outside hunks pass through; with `context` of 3 or more the diff
+    comes back unchanged (DEC-34).
+    """
+    if context >= 3:
+        return diff
+    lines = _LINES.findall(diff)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        match = _HUNK_HEADER.match(lines[i])
+        if match is None:
+            out.append(lines[i])
+            i += 1
+            continue
+        header = lines[i]
+        # The hunk's extent comes from its counts, as masking reads it (spec §5
+        # Secrets): a missing count is 1, an empty line is empty context.
+        old = int(match[2]) if match[2] is not None else 1
+        new = int(match[4]) if match[4] is not None else 1
+        body: list[str] = []
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            kind = _kind(line)
+            if kind != "\\":
+                if old <= 0 and new <= 0:
+                    break
+                if line[:1] not in (" ", "+", "-") and line.rstrip("\r\n"):
+                    break  # not a hunk line: the diff is cut short
+                old -= kind in " -"
+                new -= kind in " +"
+            body.append(line)
+            i += 1
+        out += _cut_hunk(header, body, context)
+    return "".join(out)
+
+
+@dataclass(frozen=True)
+class DriftBody:
+    """A Drift row's detail body as the pane shows it (spec §6 Rows and detail in the TUI)."""
+
+    text: str
+    masked: bool  # something in it was masked
+
+
+async def drift_body(
+    chezmoi: Chezmoi,
+    secrets: SecretsConfig,
+    row: DriftRow,
+    dest_dir: Path,
+    *,
+    context: int,
+    rendered: bool = False,
+    reveal: bool = False,
+) -> DriftBody:
+    """The row's diff, masked as a diff and then cut, or with `rendered` its
+    rendered output, masked as a body and not cut (spec §6; DEC-34).
+
+    Masking uses the write preview's classification, with the globs against
+    `dest_dir` (DEC-26); `reveal` skips it. Errors propagate unmasked, as
+    `drift()`'s do; front ends mask them.
+    """
+    if rendered:
+        text = _decode(await chezmoi.cat(row.target))
+    else:
+        text = await chezmoi.diff(row.target)
+    if reveal:
+        return DriftBody(text if rendered else cut_context(text, context), False)
+    masker = Masker(secrets, dest_dir)
+    reasons = await masking_reasons(chezmoi, masker, row.target, row.source, row.tags)
+    done = masker.mask(text, row.target, diff=not rendered, whole=bool(reasons))
+    if rendered:
+        return DriftBody(done.text, done.masked)
+    # Masked is decided on what is shown: a value masked on a context line the
+    # cut drops leaves nothing to reveal (#40). The unmasked cut is transient.
+    shown = cut_context(done.text, context)
+    return DriftBody(shown, done.masked and shown != cut_context(text, context))
+
+
 # --- The write path (spec §5 Write flow; DEC-8, DEC-27 to DEC-30) ------------
 
 Action = Literal["apply", "re-add", "forget", "edit", "merge", "add"]
@@ -366,8 +549,10 @@ class WritePlan:
 
     @property
     def needs_confirmation(self) -> bool:
-        """Interactive-only plans open no modal (DEC-4)."""
-        return any(not c.interactive for c in self.commands)
+        """Apply-all always does, even with nothing ticked, so its rows can be
+        ticked; otherwise interactive-only plans open no modal (spec §6 The
+        preview modal, DEC-4)."""
+        return self.apply_all or any(not c.interactive for c in self.commands)
 
     @property
     def dry_run(self) -> bool:
@@ -429,6 +614,108 @@ class WriteResult:
     @property
     def ok(self) -> bool:
         return self.refused is None and all(r.outcome in ("ok", "dry run") for r in self.results)
+
+
+# --- Result lines (spec §6 Drift *Result*, §8 Output; DEC-35) ----------------
+
+VERBS: dict[Action, str] = {
+    "apply": "applied",
+    "re-add": "re-added",
+    "forget": "forgot",
+    "edit": "edited",
+    "merge": "merged",
+    "add": "added",
+}
+
+
+def targets_text(targets: Sequence[Path]) -> str:
+    """The one target in `~` form, or `N targets`."""
+    return display_target(targets[0]) if len(targets) == 1 else f"{len(targets)} targets"
+
+
+def outcome_line(
+    action: Action,
+    targets: Sequence[Path],
+    *,
+    dry_run: bool,
+    commit: Commit | None,
+    pushed: bool | None,
+    state: CommitState | None,
+) -> str:
+    """A command that ran, or would have: committed, no commit, or dry run.
+
+    The lines `cheztui edit` and `add` print and the TUI's log line shows,
+    from this one function, so the two can't word a commit differently (DEC-35).
+    """
+    name = targets_text(targets)
+    if dry_run:
+        return f"would {action} {name} (dry run)"
+    if commit is not None:
+        push = "pushed" if pushed else "not pushed"
+        return f'{VERBS[action]} {name} → {commit.sha[:7]} "{commit.subject}" ({push})'
+    return f"{VERBS[action]} {name} ({state})"
+
+
+def failed(result: CommandResult) -> bool:
+    return result.outcome in ("failed", "refused") or result.reporting_error is not None
+
+
+def command_line(result: CommandResult) -> str:
+    """One command result's line (spec §6 *Result*'s table)."""
+    command = result.command
+    name = targets_text(command.targets)
+    if result.outcome == "failed":
+        return f"✗ {command.action} {name} failed: {result.error}"
+    if result.outcome == "refused":
+        return f"✗ {command.action} {name} refused: {result.error}"
+    if result.reporting_error is not None:
+        return (
+            f"✗ {command.action} {name} ran, but reading the result failed: "
+            f"{result.reporting_error}"
+        )
+    return outcome_line(
+        command.action,
+        command.targets,
+        dry_run=result.outcome == "dry run",
+        commit=result.commit,
+        pushed=result.pushed,
+        state=result.state,
+    )
+
+
+@dataclass(frozen=True)
+class ResultReport:
+    """A `WriteResult` as the TUI shows it (spec §6 *Result*)."""
+
+    line: str  # the log line; each failed part carries its own `✗`
+    failed: bool  # the log line takes the error colour
+    entries: tuple[tuple[str, str | None], ...]  # session-log entries: text and diagnostic
+
+
+def report(result: WriteResult) -> ResultReport:
+    """One entry per command result in order, a failed one with its whole masked
+    stderr, a refused one with its stray paths; then `not run:` per unrun command.
+    The log line joins the results' lines, or is `✗ <refused>` when nothing ran."""
+    entries: list[tuple[str, str | None]] = []
+    for r in result.results:
+        diagnostic = None
+        if r.outcome == "failed":
+            diagnostic = r.stderr.rstrip("\n") or r.error  # DEC-36
+        elif r.outcome == "refused" and r.stray:
+            diagnostic = "\n".join(r.stray)
+        entries.append((command_line(r), diagnostic))
+    if not result.results:
+        entries.append((f"✗ {result.refused}", None))
+    entries += [(f"not run: {c.action} {targets_text(c.targets)}", None) for c in result.unrun]
+    if not result.results:
+        return ResultReport(f"✗ {result.refused}", True, tuple(entries))
+    line = "; ".join(command_line(r) for r in result.results)
+    return ResultReport(line, any(failed(r) for r in result.results), tuple(entries))
+
+
+def left_out_line(entry: WriteEntry) -> str:
+    """An excluded entry of an interactive plan, for the session log (spec §6)."""
+    return f"left out of {entry.action}: {display_target(entry.target)} ({entry.excluded})"
 
 
 _T = TypeVar("_T")
@@ -944,20 +1231,11 @@ class WriteOps:
     async def _masking(
         self, entry: WriteEntry, tags: tuple[str, ...], masker: Masker
     ) -> WriteEntry:
-        """The entry's whole-masking reasons (spec §5 Secrets; DEC-10, DEC-17, DEC-26)."""
+        """The entry's whole-masking reasons, as the Drift detail's (`masking_reasons`)."""
         if entry.excluded is not None:
             return entry
-        reasons = []
-        if "enc" in tags:
-            reasons.append("encrypted")
-        if masker.masks_whole(entry.target):
-            reasons.append("always_mask")
-        if "tmpl" in tags and entry.source is not None:
-            # The literal source, transient: rendering can't map a line to a call.
-            source = await sanitized(self.chezmoi.source_text(entry.source), None, whole=True)
-            if calls_secret_function(source):
-                reasons.append("secret_template")
-        return replace(entry, masking=tuple(reasons))
+        reasons = await masking_reasons(self.chezmoi, masker, entry.target, entry.source, tags)
+        return replace(entry, masking=reasons)
 
     async def _previews(self, plan: WritePlan, masker: Masker) -> WritePlan:
         """Dry-run each target on its own and mask it (spec §5 Drift command plans).

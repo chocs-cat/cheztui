@@ -12,13 +12,33 @@ merge. Every write shows a preview first, and the result names the commit
 chezmoi made. A `--json` CLI covers the same ground for scripts and coding
 agents, including `cheztui edit` for safe scripted edits to managed files.
 
-**Status:** early. The read commands `cheztui status` and `cheztui verify`
-work, as do `cheztui edit` and `cheztui add` for scripted writes. `cheztui`
-opens the TUI's frame and its Drift list, with filter, selection, help, a
-command palette, the session log and settings; its fixes (apply, re-add,
-merge and the rest) arrive with the rest of v0.1. The design is in
-[docs/spec.md](docs/spec.md) and the plan in the
-[milestones](https://github.com/chocs-cat/cheztui/milestones).
+**Status:** v0.1 is the Drift view and the agent CLI (`status`, `verify`,
+`edit`, `add`). The other views in [docs/spec.md](docs/spec.md) arrive with
+the later [milestones](https://github.com/chocs-cat/cheztui/milestones).
+
+## Install
+
+cheztui needs [chezmoi](https://www.chezmoi.io/) 2.60 or later. Install it one
+of two ways; either gives you the `cheztui` command.
+
+### Homebrew
+
+```sh
+brew install chocs-cat/tap/cheztui
+```
+
+The formula lives in the `chocs-cat/tap` tap and brings its own Python and
+chezmoi.
+
+### PyPI
+
+```sh
+uv tool install cheztui
+```
+
+This installs cheztui from PyPI into its own environment. It needs Python
+3.11 or later and chezmoi 2.60 or later on your `PATH`; `pipx install cheztui`
+works the same way.
 
 ## Usage
 
@@ -49,6 +69,26 @@ flags go before the command and are passed to every chezmoi call:
 config error, `3` chezmoi missing, too old (cheztui needs 2.60 or later) or
 failing.
 
+### The TUI
+
+`cheztui` opens on the Drift view: each drifted row's direction, status and
+tags, and a detail pane with the default fix and chezmoi's diff, masked (`t`
+shows a template's rendered output, `R` reveals). Its keys run the fixes:
+`enter` the row's default fix, `a` apply, `r` re-add, `m` merge, `e` edit the
+source, `d` chezmoi's own diff, and, in help (`?`) and the command palette,
+`M` merge the selection, `x` forget and `A` apply all. A fix shows a preview
+(the exact command and each target's dry run) and runs on `enter`; edit and
+merge go straight to your editor or merge tool. The log line then names the
+commit chezmoi made and whether it pushed.
+
+The view refreshes on its own when the source dir or a managed file changes,
+`refresh.debounce_ms` (300 by default) after the last change; cheztui's own
+writes refresh once. `g` refreshes by hand, and `refresh.watch = false` in
+`~/.config/cheztui/config.toml`, or on the settings screen (`,`), turns
+watching off. Filter, selection, the session log and settings are in help.
+
+### Scripted edits
+
 `edit` takes one managed regular file and a JSON ops spec (a file, or `--ops -`
 for stdin). It refuses drift unless `--allow-drift` is given, and refuses a
 configured chezmoi `edit.command`. Templates are edited as source text;
@@ -61,6 +101,19 @@ for the ops reference, refusals and JSON contract.
 when needed. It previews the addition and refuses managed paths or directories
 containing managed entries, so adoption cannot overwrite an existing source.
 
+## Agent skill
+
+`skills/cheztui/SKILL.md` teaches coding agents to check what drifted and edit
+chezmoi-managed files through cheztui's `--json` CLI. The repo is also a
+Claude Code plugin marketplace:
+
+```
+/plugin marketplace add chocs-cat/cheztui
+/plugin install cheztui@cheztui
+```
+
+Or copy `skills/cheztui` into your agent's skills directory.
+
 ## Development
 
 ```sh
@@ -70,6 +123,8 @@ uv run cheztui        # the dev install
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the layout and the release process.
+Outside pull requests aren't taken yet; [issues](https://github.com/chocs-cat/cheztui/issues)
+and bug reports are welcome.
 
 ## License
 

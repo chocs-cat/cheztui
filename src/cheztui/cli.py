@@ -50,18 +50,36 @@ def build_parser() -> argparse.ArgumentParser:
         sub = commands.add_parser(name, help=help_text, description=help_text.capitalize() + ".")
         sub.add_argument("--json", action="store_true", help="print JSON on stdout")
     edit = commands.add_parser("edit", help="scripted edit of one managed file")
-    edit.add_argument("target", type=Path)
+    edit.add_argument("target", type=Path, help="the managed file to edit")
     edit.add_argument("--ops", required=True, metavar="FILE|-", help="JSON ops spec, or stdin")
-    edit.add_argument("--dry-run", dest="command_dry_run", action="store_true")
-    edit.add_argument("--allow-drift", action="store_true")
-    edit.add_argument("--reveal", action="store_true")
+    edit.add_argument(
+        "--dry-run",
+        dest="command_dry_run",
+        action="store_true",
+        help="print the diff and write nothing",
+    )
+    edit.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="edit even if the target drifted, overwriting its change",
+    )
+    edit.add_argument(
+        "--reveal", action="store_true", help="don't mask encrypted and always_mask diffs"
+    )
     edit.add_argument("--json", action="store_true", help="print JSON on stdout")
     add = commands.add_parser("add", help="bring a new file or directory under management")
-    add.add_argument("target", type=Path, metavar="path")
-    add.add_argument("--template", action="store_true")
-    add.add_argument("--encrypt", action="store_true")
-    add.add_argument("--dry-run", dest="command_dry_run", action="store_true")
-    add.add_argument("--reveal", action="store_true")
+    add.add_argument("target", type=Path, metavar="path", help="the file or directory to add")
+    add.add_argument("--template", action="store_true", help="add it as a template")
+    add.add_argument("--encrypt", action="store_true", help="add it encrypted")
+    add.add_argument(
+        "--dry-run",
+        dest="command_dry_run",
+        action="store_true",
+        help="print the diff and add nothing",
+    )
+    add.add_argument(
+        "--reveal", action="store_true", help="don't mask encrypted and always_mask diffs"
+    )
     add.add_argument("--json", action="store_true", help="print JSON on stdout")
     return p
 
@@ -215,15 +233,18 @@ def _script_output(result: ops.ScriptResult | ops.Refusal, as_json: bool, action
             _error(result.error)
         elif result.skipped:
             print(f"skipped {name}: already contains {result.skip_text!r}, leaving unchanged")
-        elif result.dry_run:
-            print(f"would {action} {name} (dry run)")
-        elif result.commit is not None:
-            pushed = "pushed" if result.pushed else "not pushed"
-            verb = "edited" if action == "edit" else "added"
-            print(f'{verb} {name} → {result.commit.sha[:7]} "{result.commit.subject}" ({pushed})')
         else:
-            verb = "edited" if action == "edit" else "added"
-            print(f"{verb} {name} ({result.state})")
+            # The TUI's log-line form, from the same code (§8 Output, DEC-35).
+            print(
+                ops.outcome_line(
+                    "edit" if action == "edit" else "add",
+                    (result.target,),
+                    dry_run=result.dry_run,
+                    commit=result.commit,
+                    pushed=result.pushed,
+                    state=result.state,
+                )
+            )
     return EXIT_FAILED if result.error is not None or result.verified is False else EXIT_OK
 
 
