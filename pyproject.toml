@@ -48,7 +48,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-textual-snapshot>=1.0.0",
     "ruff>=0.6",
-    "ty==0.0.84",
+    "ty==0.0.87",
 ]
 
 [tool.pytest.ini_options]
