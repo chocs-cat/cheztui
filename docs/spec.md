@@ -492,7 +492,9 @@ diff.
   a hunk is an empty context line). Lines outside hunks (`diff`, `index`,
   `---`, `+++`, mode lines, `@@` lines, `\ No newline at end of file`)
   pass through. An open PEM block runs on across hunks and ends at a
-  `diff ` line outside a hunk.
+  `diff ` line outside a hunk. A diff's lines end at `\n` alone, as git
+  writes them: a `\r`, form feed or other line-break character inside a
+  hunk line stays in that line and is masked with it (DEC-40).
 - **Globs** (`never_mask`, `always_mask`) are matched against the target's
   absolute path, case-sensitively. A leading `~/` is the destination
   directory (`$HOME` unless `--destination` says otherwise, DEC-26); a
@@ -1030,8 +1032,11 @@ step that fails:
 
 **The diff** is a unified diff of the source text with three lines of
 context, headed `--- a/<target>` and `+++ b/<target>`, the target relative
-to the destination. A line without a final newline is followed by
-`\ No newline at end of file`, so every hunk's line counts hold (DEC-31).
+to the destination. Both texts are split into lines at `\n` alone, endings
+kept, so a CRLF line stays whole and a lone `\r` or form feed stays inside
+its line, and the hunk numbers match `git diff`'s (DEC-40). A line without
+a final newline is followed by `\ No newline at end of file`, so every
+hunk's line counts hold (DEC-31).
 
 **`_editor`** (`cheztui _editor <path>`) is dispatched before argument
 parsing: it isn't in `--help`, and it loads no config and runs no chezmoi.

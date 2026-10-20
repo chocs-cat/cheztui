@@ -724,3 +724,25 @@ the skill with the CLI's own parser, so a renamed flag fails the build
 instead of misleading an agent.
 
 *Where:* `docs/spec.md` §8 (Skill), §11; `skills/cheztui/SKILL.md`.
+
+## DEC-40: Diff lines end at `\n` alone (2026-10)
+
+Added 2026-10-20. Python's `str.splitlines()` also breaks at `\r`, form
+feed, `\v`, `\x1c`–`\x1e`, `\x85`, U+2028 and U+2029. git ends a diff line
+at `\n` only, so code that splits a diff, or the texts it diffs, with
+`splitlines()` sees lines git doesn't:
+
+- `cheztui edit`'s diff (spec §8, *The diff*) put a `\ No newline at end
+  of file` marker in the middle of the file and numbered its hunks
+  differently from git, so `patch` couldn't apply it (#27).
+- The masker (spec §5, *Secrets*) read the piece after such a character as
+  a line outside the hunk and passed it through, so a whole-masked diff
+  showed it in clear (#55).
+
+Everything that reads or writes a diff splits at `\n` alone, keeping the
+ending, as `ops.cut_context` already did. Body masking keeps
+`splitlines()`: there every piece is masked as a line, and no count
+depends on it.
+
+*Where:* `docs/spec.md` §5 (Secrets, Diffs), §8 (The diff);
+`src/cheztui/edit.py`, `src/cheztui/secrets.py`.
