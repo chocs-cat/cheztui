@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/chocs-cat/cheztui/compare/v0.1.0...v0.1.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* split diffs at newlines alone, so masking and edit's hunks match git ([#57](https://github.com/chocs-cat/cheztui/issues/57)) ([b017194](https://github.com/chocs-cat/cheztui/commit/b0171940fbc3daf525286520f977733a3649a9e1)), closes [#27](https://github.com/chocs-cat/cheztui/issues/27) [#55](https://github.com/chocs-cat/cheztui/issues/55) [#53](https://github.com/chocs-cat/cheztui/issues/53) [#45](https://github.com/chocs-cat/cheztui/issues/45)
+
 ## 0.1.0 (2026-10-14)
 
 
