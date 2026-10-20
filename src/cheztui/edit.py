@@ -132,10 +132,22 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+_LINES = re.compile(r"[^\n]*\n|[^\n]+\Z")
+
+
+def split_lines(text: str) -> list[str]:
+    """Lines with their endings, split at `\n` alone, as git splits them (DEC-40).
+
+    Python's own line split also breaks at `\r`, form feed and others, which
+    git reads as part of the line; every diff reader and writer uses this.
+    """
+    return _LINES.findall(text)
+
+
 def unified_diff(old: str, new: str, name: str) -> str:
     lines = difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
+        split_lines(old),
+        split_lines(new),
         fromfile=f"a/{name}",
         tofile=f"b/{name}",
         n=3,

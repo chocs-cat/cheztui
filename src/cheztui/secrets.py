@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cheztui.config import SecretsConfig
+from cheztui.edit import split_lines
 
 MASK = "********"
 
@@ -197,7 +198,9 @@ class Masker:
         output: list[str] = []
         old = new = 0
         pem = masked = False
-        for line in text.splitlines(keepends=True):
+        # At `\n` alone, as git ends a diff line, or a lone `\r` would end the
+        # hunk early and pass the rest through unmasked (spec §5 Diffs, DEC-40).
+        for line in split_lines(text):
             content, ending = _split_ending(line)
             hunk = _HUNK.match(content)
             if hunk:

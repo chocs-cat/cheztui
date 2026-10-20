@@ -1,13 +1,24 @@
 """Ops engine and internal editor contracts (spec §8)."""
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from cheztui.cli import main
 from cheztui.config import SecretsConfig
-from cheztui.edit import SpecError, apply_spec, parse_spec, sha256, spec_from_json, unified_diff
+from cheztui.edit import (
+    SpecError,
+    apply_spec,
+    parse_spec,
+    sha256,
+    spec_from_json,
+    split_lines,
+    unified_diff,
+)
 from cheztui.secrets import Masker
 
 
@@ -154,7 +165,10 @@ def test_parse_and_skip():
     assert apply_spec(spec, "a", "a") == "c"
 
 
-@pytest.mark.parametrize(("old", "new"), [("a", "b"), ("a\n", "a"), ("a", "a\n")])
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("a", "b"), ("a\n", "a"), ("a", "a\n"), ("a\rleak\n\x0cleak\nb", "a\rleak\n\x0cleak\nc")],
+)
 def test_diff_and_whole_mask(old, new):
     diff = unified_diff(old, new, ".foo")
     assert diff.startswith("--- a/.foo\n+++ b/.foo\n@@")
@@ -162,10 +176,54 @@ def test_diff_and_whole_mask(old, new):
     masked = (
         Masker(SecretsConfig(), Path("/")).mask(diff, Path("/.foo"), diff=True, whole=True).text
     )
-    for line in masked.splitlines():
-        if line.startswith(("+", "-", " ")) and not line.startswith(("+++", "---")):
-            assert line[1:] == "********"
+    # Every line past the headers is a hunk header, the marker, or masked whole.
+    for line in split_lines(masked)[2:]:
+        assert (
+            line.startswith("@@")
+            or line == "\\ No newline at end of file\n"
+            or (line[0] in "+- " and line[1:] == "********\n")
+        )
+    assert "leak" not in masked
     assert unified_diff(old, old, ".foo") == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("", []),
+        ("a", ["a"]),
+        ("a\n", ["a\n"]),
+        ("a\r\nb", ["a\r\n", "b"]),
+        ("a\rb\x0cc\n", ["a\rb\x0cc\n"]),
+    ],
+)
+def test_split_lines_at_newline_alone(text, expected):
+    # git ends a diff line at `\n` only (DEC-40).
+    assert split_lines(text) == expected
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_diff_matches_git(tmp_path):
+    # #27: a form feed and a lone `\r` mid-file are inside their lines, as git reads them.
+    old = "a\n\x0cpage two\nsecret=abc\rmore\nz\n"
+    new = old.replace("z\n", "y\n")
+    diff = unified_diff(old, new, "x")
+    assert diff.count("\n@@ -") == 1
+    assert "No newline" not in diff
+    (tmp_path / "a").write_bytes(old.encode())
+    (tmp_path / "b").write_bytes(new.encode())
+    env = {**os.environ, "HOME": str(tmp_path), "GIT_CONFIG_GLOBAL": os.devnull}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    done = subprocess.run(
+        ["git", "diff", "--no-index", "--no-color", "a", "b"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert done.returncode == 1, done.stderr
+    git = done.stdout.decode()
+    assert diff[diff.index("@@") :] == git[git.index("@@") :]
 
 
 def test_editor_writes_same_inode(tmp_path, monkeypatch):
