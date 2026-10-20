@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from cheztui import cli
+from cheztui import cli, ops
 from tests.conftest import Scratch, requires_chezmoi
 
 SKILL = Path(__file__).resolve().parent.parent / "skills" / "cheztui" / "SKILL.md"
@@ -165,6 +165,8 @@ def test_the_skill_flow(scratch: Scratch):
     code, refused = cheztui(scratch, "edit", drifted, "--ops", spec, "--json")
     assert code == 1
     assert set(refused) == {"error"}
+    # The drift refusal itself, not any other (spec §8 Command step 3).
+    assert refused["error"].startswith(f"{ops.display_target(drifted)} has drifted (")
 
     code, dry = cheztui(scratch, "edit", clean, "--ops", spec, "--dry-run", "--json")
     assert code == 0
