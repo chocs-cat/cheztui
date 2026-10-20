@@ -36,7 +36,7 @@ from cheztui.chezmoi import (
     StatusRow,
 )
 from cheztui.config import Config, SecretsConfig
-from cheztui.edit import Spec, SpecError, apply_spec, sha256, unified_diff
+from cheztui.edit import Spec, SpecError, apply_spec, sha256, split_lines, unified_diff
 from cheztui.git import Commit, Git, GitError, GitFailed
 from cheztui.runner import Runner, run_subprocess
 from cheztui.secrets import Masker, calls_secret_function
@@ -309,7 +309,6 @@ async def masking_reasons(
 
 
 _HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_LINES = re.compile(r"[^\n]*\n|[^\n]+\Z")  # lines with their endings, split at `\n` alone
 
 
 def _kind(line: str) -> str:
@@ -378,7 +377,7 @@ def cut_context(diff: str, context: int) -> str:
     """
     if context >= 3:
         return diff
-    lines = _LINES.findall(diff)
+    lines = split_lines(diff)
     out: list[str] = []
     i = 0
     while i < len(lines):

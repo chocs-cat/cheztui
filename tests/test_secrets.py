@@ -498,6 +498,18 @@ def test_tokens_in_diff(tmp_path: Path, token: str):
     assert result == Masked("@@ -1 +1 @@\n-value=" + MASK + "\n+value=ordinary\n", True)
 
 
+def test_diff_lines_end_at_newline_alone(tmp_path: Path):
+    # #55: a lone `\r` doesn't end a diff line (DEC-40), so the line after it is
+    # still in the hunk and masked.
+    text = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+secret=abc\rleaked\n password=hunter2\n"
+    masker = Masker(SecretsConfig(), tmp_path)
+    whole = masker.mask(text, tmp_path / "x", diff=True, whole=True)
+    assert whole == Masked(f"--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-{MASK}\n+{MASK}\n {MASK}\n", True)
+    line_level = masker.mask(text, tmp_path / "x", diff=True).text
+    assert line_level.endswith(f" password={MASK}\n")
+    assert "leaked" not in line_level
+
+
 def test_headers_and_zero_count_hunk_unchanged(tmp_path: Path):
     token = "ghp_" + "A" * 36
     text = "diff --git a/" + token + " b/config\n@@ -0,0 +0,0 @@\n-token=v\n"
