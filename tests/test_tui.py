@@ -6,12 +6,14 @@ one runs the real chezmoi in the scratch setup inside Textual's loop.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 from textual.content import Content
 from textual.pilot import Pilot
 from textual.widgets import Static
+from textual.worker import WorkerCancelled, WorkerState
 
 from cheztui.config import Config, SecretsConfig, UiConfig
 from cheztui.tui.app import CheztuiApp
@@ -31,11 +33,21 @@ def make_app(
 
 
 async def settled(pilot: Pilot) -> None:
-    """Wait for the workers that end: the watcher's runs until it is stopped."""
-    workers = [w for w in pilot.app.workers if w.group != "watch"]
-    if workers:  # an empty list waits for every worker
-        await pilot.app.workers.wait_for_complete(workers)
-    await pilot.pause()
+    """Wait for the workers that end: the watcher's runs until it is stopped.
+
+    One cancelled while waited for (a body read the next one supersedes)
+    raises out of `wait_for_complete` before the rest are done, so wait again.
+    """
+    for _ in range(200):
+        workers = [w for w in pilot.app.workers if w.group != "watch" and not w.is_cancelled]
+        try:
+            if workers:  # an empty list waits for every worker
+                await pilot.app.workers.wait_for_complete(workers)
+        except WorkerCancelled:
+            continue
+        await pilot.pause()
+        return
+    raise AssertionError("workers never settled")
 
 
 def text(app: CheztuiApp, selector: str) -> str:
@@ -69,6 +81,30 @@ def home(monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # --- Header -------------------------------------------------------------------------
+
+
+async def test_settled_waits_past_a_cancelled_worker(tmp_path):
+    # #45: a worker cancelled while `settled` waits on it doesn't end the wait.
+    app = make_app(FakeChezmoi.in_sync(), tmp_path)
+    async with app.run_test() as pilot:
+        await settled(pilot)
+        release = asyncio.Event()
+
+        async def work() -> None:
+            await release.wait()
+
+        first = app.run_worker(work(), group="probe", exclusive=True)
+        waiting = asyncio.create_task(settled(pilot))
+        await asyncio.sleep(0)  # `settled` is now waiting on `first`
+        second = app.run_worker(work(), group="probe", exclusive=True)
+        await pilot.pause()
+        assert first.is_cancelled
+        assert not waiting.done()
+        release.set()
+        await waiting
+        assert first.is_finished
+        assert second.is_finished
+        assert second.state == WorkerState.SUCCESS
 
 
 async def test_header_on_drift_with_an_upstream(tmp_path, monkeypatch):
