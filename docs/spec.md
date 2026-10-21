@@ -1429,8 +1429,9 @@ src/cheztui/
   test job installs chezmoi at the floor version (DEC-21), so integration
   tests run in CI against the oldest chezmoi cheztui supports, while a
   maintainer's machine runs them against a current one (DEC-24). A pull
-  request that only touches `docs/` skips these checks, and **CI passed**
-  still reports.
+  request that only touches files no check reads (`docs/`, the agent
+  instructions, CONTRIBUTING.md, and the other paths in the workflow's
+  `SKIP` list) skips these checks, and **CI passed** still reports.
 
 ## 12. Milestones
 

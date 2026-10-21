@@ -10,9 +10,9 @@ permissions:
 
 jobs:
   changes:
-    # Decides whether lint, test and package run. The docs filter lives here,
+    # Decides whether lint, test and package run. The path filter lives here,
     # not in a workflow-level paths-ignore: a skipped workflow never reports
-    # CI passed, so a docs-only pull request would wait on it forever.
+    # CI passed, so a pull request it skips would wait on it forever.
     name: changes
     runs-on: ubuntu-latest
     permissions:
@@ -24,6 +24,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          # Paths nothing in the gate or the build reads, as an extended
+          # regex: a pull request that touches only these skips the checks.
+          # README.md, LICENSE and CHANGELOG.md go into the sdist and
+          # skills/ into test_skill.py, so they run; so does this workflow.
+          SKIP: '^(docs/|AGENTS\.md$|CLAUDE\.md$|CONTRIBUTING\.md$|\.agents/|\.github/dependabot\.yml$|\.github/workflows/(release|formula)\.yml$)'
         run: |
           if [ -z "$PR" ]; then
             echo code=true >> "$GITHUB_OUTPUT"
@@ -32,7 +37,7 @@ jobs:
           # Both sides of a rename count, so moving code into docs/ still runs.
           files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -qv '^docs/' <<<"$files"; then
+          if grep -qvE "$SKIP" <<<"$files"; then
             echo code=true >> "$GITHUB_OUTPUT"
           else
             echo code=false >> "$GITHUB_OUTPUT"
@@ -113,7 +118,7 @@ jobs:
     needs: [changes, lint, test, package]
     runs-on: ubuntu-latest
     steps:
-      # A docs-only pull request skips the checks, which counts as passing;
+      # A pull request `changes` skips counts as passing;
       # anything else needs them all to succeed.
       - run: |
           want=success
