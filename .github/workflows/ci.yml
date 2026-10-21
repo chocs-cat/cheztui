@@ -5,9 +5,45 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  changes:
+    # Decides whether lint, test and package run. The docs filter lives here,
+    # not in a workflow-level paths-ignore: a skipped workflow never reports
+    # CI passed, so a docs-only pull request would wait on it forever.
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR" ]; then
+            echo code=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Both sides of a rename count, so moving code into docs/ still runs.
+          files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)')
+          if grep -qv '^docs/' <<<"$files"; then
+            echo code=true >> "$GITHUB_OUTPUT"
+          else
+            echo code=false >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
     name: lint (ruff, ty)
+    needs: changes
+    # Anything but an explicit `false` runs it, so a failed `changes` job
+    # still runs the checks instead of skipping them.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -19,6 +55,8 @@ jobs:
 
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ matrix.os }}
     env:
       # The floor chezmoi (DEC-21, DEC-24): raise it with MIN_VERSION.
@@ -47,6 +85,8 @@ jobs:
     # left out of the wheel, a dependency missing from the metadata) that
     # the tests, which run from the source tree, can't see.
     name: package
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -70,13 +110,19 @@ jobs:
     # without editing the protection rule.
     name: CI passed
     if: always()
-    needs: [lint, test, package]
+    needs: [changes, lint, test, package]
     runs-on: ubuntu-latest
     steps:
+      # A docs-only pull request skips the checks, which counts as passing;
+      # anything else needs them all to succeed.
       - run: |
-          test "${{ needs.lint.result }}" = success
-          test "${{ needs.test.result }}" = success
-          test "${{ needs.package.result }}" = success
+          want=success
+          if [ "${{ needs.changes.outputs.code }}" = false ]; then
+            want=skipped
+          fi
+          test "${{ needs.lint.result }}" = "$want"
+          test "${{ needs.test.result }}" = "$want"
+          test "${{ needs.package.result }}" = "$want"
 
   commits:
     name: conventional commit titles

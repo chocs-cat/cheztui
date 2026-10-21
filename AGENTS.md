@@ -163,7 +163,8 @@ said it, and cite the entry at the code site.
   targets, on Linux and macOS with Python 3.11 to 3.13, plus a packaging
   check that stays CI-only.
 - **CI:** `.github/workflows/ci.yml` runs the gate on pull requests, including
-  drafts; pushes to `master` run it too. The required check is **CI passed**;
+  drafts, and skips it for one that only touches `docs/`; pushes to
+  `master` run it too. The required check is **CI passed**;
   **conventional commit titles** checks the pull request title.
 - **Releases:** release-please, as CONTRIBUTING.md's *Releasing* describes: a
   chunk pull request's title is a Conventional Commit for the chunk's

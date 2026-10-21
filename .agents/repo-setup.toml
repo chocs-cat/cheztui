@@ -1,0 +1,13 @@
+# Written by the repo-setup skill, which reads it on later runs to offer only
+# what changed since. Edit `declined` by hand to change what it offers.
+
+# The newest repo-setup version this repo has been reviewed against.
+version = 2
+
+# Optional pieces and settings the repo has, from: check, ci, dependabot,
+# release-please, roadmap, protection.
+pieces = ["check", "ci", "dependabot", "release-please", "roadmap", "protection"]
+
+# Pieces (by name) and changes (by version, e.g. "v2") the owner turned down,
+# with the reason. Ask for one by name to add it after all.
+[declined]
