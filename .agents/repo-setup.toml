@@ -2,7 +2,7 @@
 # what changed since. Edit `declined` by hand to change what it offers.
 
 # The newest repo-setup version this repo has been reviewed against.
-version = 2
+version = 3
 
 # Optional pieces and settings the repo has, from: check, ci, dependabot,
 # release-please, roadmap, protection.
