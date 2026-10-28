@@ -4,7 +4,10 @@ Events are slow and unordered, on macOS CI most of all, so no test sleeps a
 fixed time: positives poll for their condition, and a negative ("this
 didn't refresh") is shown by changing a sentinel afterwards and waiting for
 the refresh after its event arrives, so the count is checked once
-everything before it has had its chance to arrive.
+everything before it has had its chance to arrive. A negative's own change
+is written by `after_sentinel`, which waits for it to arrive and go quiet
+before the sentinel: written together, the change and the sentinel share one
+debounce, and a wrong refresh hides inside the sentinel's (#64).
 
 `Watchers` makes `FakeWatcher`s; conftest installs it as the default
 watcher factory, so a TUI test watches nothing real unless it asks to.
@@ -115,10 +118,24 @@ def record_events(monkeypatch: pytest.MonkeyPatch) -> Events:
     return events
 
 
-async def after_sentinel(sentinel: Path, events: Events, debounce_ms: int) -> None:
+async def after_sentinel(
+    sentinel: Path, events: Events, debounce_ms: int, *, uncounted: Sequence[Path] = ()
+) -> None:
     """Change `sentinel` and wait for the refresh after its event arrives, then
     for quiet. An extra refresh from earlier can't stand in for the
-    sentinel's, so the caller's exact count catches it."""
+    sentinel's, so the caller's exact count catches it.
+
+    A negative passes the paths it shows don't count as `uncounted`: they are
+    written first, and the sentinel waits until their events have arrived and
+    gone quiet. Written together, they and the sentinel would share one
+    debounce, and a wrong refresh would hide inside the sentinel's (#64).
+    """
+    if uncounted:
+        mark = len(events.arrived)
+        for path in uncounted:
+            path.write_text("changed\n")
+        await eventually(lambda: all(events.saw(p.name, mark) is not None for p in uncounted))
+        await quiet(lambda: (events.count(), len(events.arrived)), debounce_ms)
     mark = len(events.arrived)
     sentinel.write_text(f"sentinel {time.monotonic()}\n")
     await eventually(lambda: events.saw(sentinel.name, mark) is not None)

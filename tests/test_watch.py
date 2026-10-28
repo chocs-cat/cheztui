@@ -146,8 +146,10 @@ class Running:
         await ready(self.home / ".probe", self.count, self.events, self.debounce_ms)
         self.due = 0
 
-    async def sentinel(self) -> None:
-        await after_sentinel(self.home / ".sentinel", self.events, self.debounce_ms)
+    async def sentinel(self, uncounted: Sequence[Path] = ()) -> None:
+        await after_sentinel(
+            self.home / ".sentinel", self.events, self.debounce_ms, uncounted=uncounted
+        )
 
     async def stop(self) -> None:
         self.task.cancel()
@@ -221,8 +223,7 @@ async def test_a_source_change_is_due(start: Start):
 )
 async def test_changes_that_dont_count(start: Start, path: str):
     r = await start()
-    (r.home / path).write_text("changed\n")
-    await r.sentinel()
+    await r.sentinel(uncounted=[r.home / path])
     assert r.due == 1, r.events.describe()
 
 

@@ -89,7 +89,9 @@ makes the app's watcher a fake from `tests/watching.py`, whose `due()`
 stands in for a change; the tests that watch real files set
 `app.watcher_factory` to `watch.Watcher` and use that file's helpers,
 which poll rather than sleep and show a missing refresh with a sentinel
-change after it.
+change after it. The sentinel follows only once the change under test has
+arrived and gone quiet; in one debounce with it, a wrong refresh would hide
+inside the sentinel's.
 Snapshot tests (pytest-textual-snapshot) keep the expected screens as SVGs
 in `tests/__snapshots__/`. After a deliberate change to what a screen
 shows, rewrite them with `uv run pytest --snapshot-update` and review the
