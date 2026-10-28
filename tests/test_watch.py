@@ -111,6 +111,13 @@ def test_watch_imports_neither_textual_nor_chezmoi():
 # --- The watcher ----------------------------------------------------------------------
 
 
+def test_a_failing_count_shows_its_events():
+    events = Events()
+    assert events.describe() == "(no events)"
+    events.arrived.extend([("/w/home/.probe", 0), ("/w/home/.zshrc", 1)])
+    assert events.describe() == "0  /w/home/.probe\n1  /w/home/.zshrc"
+
+
 @dataclass
 class Running:
     """A `Watcher` running in a task, counting its `on_due` calls."""
@@ -136,7 +143,7 @@ class Running:
         return self.due
 
     async def ready(self) -> None:
-        await ready(self.home / ".probe", self.count, self.debounce_ms)
+        await ready(self.home / ".probe", self.count, self.events, self.debounce_ms)
         self.due = 0
 
     async def sentinel(self) -> None:
@@ -188,7 +195,7 @@ async def test_a_target_change_is_due_once(start: Start):
     (r.home / ".zshrc").write_text("changed\n")
     await eventually(lambda: r.due >= 1)
     await r.sentinel()
-    assert r.due == 2
+    assert r.due == 2, r.events.describe()
 
 
 async def test_a_burst_is_due_once(start: Start):
@@ -197,7 +204,7 @@ async def test_a_burst_is_due_once(start: Start):
         (r.home / ".zshrc").write_text(f"changed {n}\n")
     await eventually(lambda: r.due >= 1)
     await r.sentinel()
-    assert r.due == 2
+    assert r.due == 2, r.events.describe()
 
 
 async def test_a_source_change_is_due(start: Start):
@@ -216,7 +223,7 @@ async def test_changes_that_dont_count(start: Start, path: str):
     r = await start()
     (r.home / path).write_text("changed\n")
     await r.sentinel()
-    assert r.due == 1
+    assert r.due == 1, r.events.describe()
 
 
 async def test_paused_drops_events_until_resumed(start: Start):
@@ -226,10 +233,10 @@ async def test_paused_drops_events_until_resumed(start: Start):
     (r.home / ".zshrc").write_text("while paused\n")
     await eventually(lambda: r.events.saw(".zshrc", mark) is not None)
     await quiet(r.count, DEBOUNCE)
-    assert r.due == 0
+    assert r.due == 0, r.events.describe()
     r.watcher.resume()
     await r.sentinel()
-    assert r.due == 1
+    assert r.due == 1, r.events.describe()
 
 
 async def test_pause_drops_a_wait_under_way(start: Start):
@@ -240,7 +247,7 @@ async def test_pause_drops_a_wait_under_way(start: Start):
     assert r.watcher._timer is None
     r.watcher.resume()
     await r.sentinel()
-    assert r.due == 1
+    assert r.due == 1, r.events.describe()
 
 
 async def test_zero_debounce_is_due_per_batch(start: Start):

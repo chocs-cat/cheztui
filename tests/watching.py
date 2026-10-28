@@ -33,9 +33,13 @@ async def eventually(condition: Callable[[], bool], timeout: float = TIMEOUT) ->
         await asyncio.sleep(0.02)
 
 
-async def quiet(count: Callable[[], int], debounce_ms: int) -> None:
-    """Wait until `count` has stayed the same for two debounces."""
-    window = 2 * max(debounce_ms, 50) / 1000
+async def quiet(
+    count: Callable[[], object], debounce_ms: int, *, window: float | None = None
+) -> None:
+    """Wait until `count` has stayed the same for `window` seconds (two debounces
+    by default)."""
+    if window is None:
+        window = 2 * max(debounce_ms, 50) / 1000
     deadline = time.monotonic() + TIMEOUT
     while True:
         before = count()
@@ -46,11 +50,14 @@ async def quiet(count: Callable[[], int], debounce_ms: int) -> None:
             raise AssertionError("the count never settled")
 
 
-async def ready(probe: Path, count: Callable[[], int], debounce_ms: int) -> None:
+async def ready(probe: Path, count: Callable[[], int], events: Events, debounce_ms: int) -> None:
     """Wait for watching to be live: watchfiles has no "watching now" signal.
 
-    Touch `probe` (a watched path) until `count` moves, then wait for quiet.
-    The caller resets its count afterwards.
+    Touch `probe` (a watched path) until `count` moves, then wait until
+    neither a refresh nor any raw event has arrived for a full window: macOS
+    can deliver an event from before watching started (the test's setup
+    writes, an earlier probe) late, and counted after this returns it would
+    be an extra refresh (#59). The caller resets its count afterwards.
     """
     deadline = time.monotonic() + TIMEOUT
     start = count()
@@ -64,7 +71,11 @@ async def ready(probe: Path, count: Callable[[], int], debounce_ms: int) -> None
         wait = time.monotonic() + max(0.5, 3 * debounce_ms / 1000)
         while count() == start and time.monotonic() < wait:
             await asyncio.sleep(0.02)
-    await quiet(count, debounce_ms)
+    await quiet(
+        lambda: (count(), len(events.arrived)),
+        debounce_ms,
+        window=max(1.0, 3 * debounce_ms / 1000),
+    )
 
 
 class Events:
@@ -79,6 +90,11 @@ class Events:
     def saw(self, name: str, since: int = 0) -> int | None:
         """The count when an event on a path named `name` arrived, from entry `since` on."""
         return next((n for p, n in self.arrived[since:] if Path(p).name == name), None)
+
+    def describe(self) -> str:
+        """Every arrived event, in arrival order, as `<count at arrival>  <path>`:
+        a failing count's message, so it shows what led to it."""
+        return "\n".join(f"{n}  {p}" for p, n in self.arrived) or "(no events)"
 
     def clear(self) -> None:
         self.arrived.clear()
