@@ -8,6 +8,7 @@ sentinel pattern in `tests/watching.py`, never a bare sleep.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -57,8 +58,8 @@ class Reads:
         await ready(home / ".tmplfile", lambda: statuses(self.fake), self.events, DEBOUNCE)
         self.base = statuses(self.fake)
 
-    async def sentinel(self, home: Path) -> None:
-        await after_sentinel(home / ".mine", self.events, DEBOUNCE)
+    async def sentinel(self, home: Path, uncounted: Sequence[Path] = ()) -> None:
+        await after_sentinel(home / ".mine", self.events, DEBOUNCE, uncounted=uncounted)
 
 
 @pytest.fixture
@@ -96,9 +97,7 @@ async def test_a_sibling_and_git_change_refresh_nothing(tmp_path, root, events):
     async with app.run_test() as pilot:
         await settled(pilot)
         await reads.ready(home)
-        (home / ".unmanaged").write_text("not managed\n")
-        (fake.source / ".git" / "index").write_text("git's own\n")
-        await reads.sentinel(home)
+        await reads.sentinel(home, uncounted=[home / ".unmanaged", fake.source / ".git" / "index"])
         assert reads() == 1, events.describe()
 
 
