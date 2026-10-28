@@ -76,7 +76,7 @@ async def test_a_managed_target_edit_is_one_refresh(tmp_path, root, events):
         (home / ".tool").write_text("edited elsewhere\n")
         await eventually(lambda: reads() >= 1)
         await reads.sentinel(home)
-        assert reads() == 2
+        assert reads() == 2, events.describe()
 
 
 async def test_a_source_edit_is_a_refresh(tmp_path, root, events):
@@ -99,7 +99,7 @@ async def test_a_sibling_and_git_change_refresh_nothing(tmp_path, root, events):
         (home / ".unmanaged").write_text("not managed\n")
         (fake.source / ".git" / "index").write_text("git's own\n")
         await reads.sentinel(home)
-        assert reads() == 1
+        assert reads() == 1, events.describe()
 
 
 async def test_a_write_that_touches_a_target_is_one_refresh(tmp_path, root, events):
@@ -126,11 +126,11 @@ async def test_a_write_that_touches_a_target_is_one_refresh(tmp_path, root, even
         await pilot.press("enter")
         await eventually(lambda: events.saw(".tool", mark) is not None)
         await quiet(lambda: len(events.arrived), DEBOUNCE)
-        assert reads() == 1  # the refresh after the write, still running
+        assert reads() == 1, events.describe()  # the refresh after the write, still running
         release.set()
         await settled(pilot)
         await reads.sentinel(home)
-        assert reads() == 2
+        assert reads() == 2, events.describe()
 
 
 async def test_watch_off_refreshes_on_g_only(tmp_path, root, events):

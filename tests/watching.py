@@ -80,6 +80,11 @@ class Events:
         """The count when an event on a path named `name` arrived, from entry `since` on."""
         return next((n for p, n in self.arrived[since:] if Path(p).name == name), None)
 
+    def describe(self) -> str:
+        """Every arrived event, in arrival order, as `<count at arrival>  <path>`:
+        a failing count's message, so it shows what led to it."""
+        return "\n".join(f"{n}  {p}" for p, n in self.arrived) or "(no events)"
+
     def clear(self) -> None:
         self.arrived.clear()
 
