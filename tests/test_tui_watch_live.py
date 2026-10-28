@@ -54,7 +54,7 @@ class Reads:
         return statuses(self.fake) - self.base
 
     async def ready(self, home: Path) -> None:
-        await ready(home / ".tmplfile", lambda: statuses(self.fake), DEBOUNCE)
+        await ready(home / ".tmplfile", lambda: statuses(self.fake), self.events, DEBOUNCE)
         self.base = statuses(self.fake)
 
     async def sentinel(self, home: Path) -> None:

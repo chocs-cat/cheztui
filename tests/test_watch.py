@@ -143,7 +143,7 @@ class Running:
         return self.due
 
     async def ready(self) -> None:
-        await ready(self.home / ".probe", self.count, self.debounce_ms)
+        await ready(self.home / ".probe", self.count, self.events, self.debounce_ms)
         self.due = 0
 
     async def sentinel(self) -> None:
