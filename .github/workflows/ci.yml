@@ -118,16 +118,19 @@ jobs:
     needs: [changes, lint, test, package]
     runs-on: ubuntu-latest
     steps:
-      # A pull request `changes` skips counts as passing;
-      # anything else needs them all to succeed.
-      - run: |
-          want=success
-          if [ "${{ needs.changes.outputs.code }}" = false ]; then
-            want=skipped
-          fi
-          test "${{ needs.lint.result }}" = "$want"
-          test "${{ needs.test.result }}" = "$want"
-          test "${{ needs.package.result }}" = "$want"
+      # Passes only if every job in `needs` but `changes` succeeded, or was
+      # skipped on a pull request `changes` found docs-only. jq judges all
+      # the results in one expression and `-e` turns false into exit 1, so a
+      # job added to `needs` is covered with no other edit. Don't rewrite it
+      # as a shell loop of `test … || …`: under `bash -e` only the last
+      # iteration's status counts, so an earlier failure passes.
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '(.changes.outputs.code == "false") as $docs
+            | del(.changes)
+            | all(.[]; .result == "success" or ($docs and .result == "skipped"))' \
+            <<<"$NEEDS" >/dev/null
 
   commits:
     name: conventional commit titles
