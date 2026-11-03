@@ -1,0 +1,25 @@
+# Written by repokit, whose update skill reads it on later runs to offer only
+# what changed since. Edit `deferred` or `declined` by hand to change what it
+# offers.
+stamp = 1
+source = "https://github.com/johnfoland/repokit"
+
+# The highest entry in repokit's MIGRATIONS.md this repo has been reviewed
+# against.
+level = 5
+
+# Entries (by number) at or below `level` the owner put off. Later runs offer
+# them again.
+deferred = []
+
+# Entries (keyed by number, as 2 = "…") the owner turned down, with the
+# reason. Ask for one by name to apply it after all.
+[declined]
+
+[repokit]
+# Optional pieces and settings the repo has, from: check, ci, dependabot,
+# release-please, roadmap, protection.
+pieces = ["check", "ci", "dependabot", "release-please", "roadmap", "protection"]
+
+# Pieces (by name) the owner turned down, with the reason.
+[repokit.declined]
